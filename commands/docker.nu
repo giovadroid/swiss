@@ -1,0 +1,3 @@
+
+alias dctx = docker context
+ 

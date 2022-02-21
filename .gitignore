@@ -1,0 +1,5 @@
+**/.tmux/
+.tmux/**/
+~
+.volatile/**/*
+.vscode/extensions.json
