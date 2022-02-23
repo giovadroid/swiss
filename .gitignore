@@ -3,3 +3,5 @@
 ~
 .volatile/**/*
 .vscode/extensions.json
+.dyn
+yarn.lock

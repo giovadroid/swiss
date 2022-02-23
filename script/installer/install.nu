@@ -23,10 +23,6 @@ if (file-exists ~/.swiss_dyn) {} {
     createLink ($nu.env.SWISS_HOME + "/.dyn") ~/.swiss_dyn -D 0;
 }
 
-if (file-exists ~/.swiss_commands) {} {
-    createLink ($nu.env.SWISS_HOME + "/commands") ~/.swiss_commands -D 1;
-}
-
 if (file-exists ~/.swiss_rc) {} {
     createLink ($nu.env.SWISS_HOME + "/commands/swiss_rc.nu") ~/.swiss_rc -D 0;
 }

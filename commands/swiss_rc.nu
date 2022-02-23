@@ -7,6 +7,7 @@ if (file-exists ~/.cache/starship) {} {
 
 starship init nu | save ~/.cache/starship/init.nu
 zoxide init nushell --hook prompt | save ~/.zoxide.nu
+source ~/.zoxide.nu
 
 # nu swiss env
 source ~/.swiss/commands/swiss_init.nu
