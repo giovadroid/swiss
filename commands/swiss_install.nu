@@ -14,8 +14,6 @@ let startup_settings = [
     "starship init nu | save ~/.cache/starship/init.nu",
     "source ~/.swiss_rc",
     "source ~/.swiss_dyn",
-    "source ~/.cache/starship/init.nu",
-    "source ~/.zoxide.nu",
 ]
 
 config set startup $startup_settings 
