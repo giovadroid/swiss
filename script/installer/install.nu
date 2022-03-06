@@ -100,7 +100,7 @@ source ./.dyn;
 # config set line_editor "hx" | ignore
 
 # Install common cargo utils
-cargo install  cargo-watch cargo-update cargo-edit 
+cargo install  cargo-watch cargo-update cargo-edit cargo-cache cargo-deps
 
 # Install common shell utils
 cargo install find-files ripgrep watchexec-cli hexyl zoxide czkawka_cli dua-cli

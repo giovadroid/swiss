@@ -54,7 +54,9 @@ You can learn about each tool installed by following some of the next links.
 
 * [watch (cargo watch)](https://github.com/watchexec/cargo-watch)
 * [update (cargo install-update)](https://github.com/nabijaczleweli/cargo-update)
-* [edit (cargo add...)](https://github.com/killercup/cargo-edit)
+* [edit (cargo add...)](https://github.com/killercup/cargo--edit)
+* [cache (cargo cache...)](https://crates.io/crates/cargo-cache)
+* [deps (cargo deps...)](https://crates.io/crates/cargo-deps)
 
 ## Linux or Mac Os tools
 
