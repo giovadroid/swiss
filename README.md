@@ -1,3 +1,5 @@
+> Install is not working due big update of NuShell. will update in next versions
+
 # SWISS
 
 Cross platform shell and tools for daily usage. All build it in rust
