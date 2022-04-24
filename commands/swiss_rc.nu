@@ -5,8 +5,8 @@ if file-exists ~/.cache/starship {} else {
     mkdir ~/.cache/starship
 }
 
-starship init nu | save ~/.cache/starship/init.nu
-zoxide init nushell --hook prompt | save ~/.zoxide.nu
+starship init nu | save ~/.cache/starship/init.nu;
+zoxide init nushell --hook prompt | save ~/.zoxide.nu;
 source ~/.zoxide.nu
 source ~/.cache/starship/init.nu
 

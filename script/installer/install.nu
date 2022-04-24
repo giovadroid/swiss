@@ -4,11 +4,27 @@
 # config set env $nu.env 
 # config set path $nu.path
 
-if ( $nu.env.SWISS_HOME == "" ) {
-    echo "SWISS_HOME Not exists trying to create"; char newline
-    let-env SWISS_HOME = (pwd)
-    # config set env $nu.env | ignore
-} 
+
+def install-envs [] {
+    # Create our env vars
+
+    if ( $nu.env.SWISS_HOME == "" ) {
+        echo "SWISS_HOME Not exists trying to create"; char newline
+        let-env SWISS_HOME = (pwd)
+        # config set env $nu.env | ignore
+    } 
+}
+
+def install-links [] {
+    # Create symlinks to 3 pahts
+    # ~/.swiss => (pwd) # Swiss home dir
+    # ~/.swiss_rc => (pwd)/commands/swiss_rc.nu
+    # ~/.swiss_dyn => (pwd)/.dyn
+}
+
+def install-cargo [] {
+    
+}
 
 echo $env.SWISS_HOME;
 exit;
