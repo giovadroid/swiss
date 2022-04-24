@@ -8,7 +8,7 @@ def file-exists [
         echo "0";
     })
     let pathfound = ($exists | empty?);
-    $pathfound == $false;
+    $pathfound == false;
 }
 
 # Checks if swiss are working
@@ -23,9 +23,9 @@ def swiss-watch [
     cd $nu.env.SWISS_HOME
     let isEmptyCommand = ($command | empty?)
     let-env no_install_root = 1
-    if ($isEmptyCommand == $true) {
+    if $isEmptyCommand == true {
         watchexec --shell nu "swiss-check" --watch commands --watch script
-    } {
+    } else {
         watchexec --shell nu $command --watch commands --watch script
     }
 }

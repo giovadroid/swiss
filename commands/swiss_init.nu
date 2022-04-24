@@ -8,21 +8,21 @@ def dynSource [
 
 echo | save --raw ~/.swiss_dyn;
 
-ls ($nu.env.SWISS_HOME + "/commands") | where name !~ swiss_ | each { dynSource $it.name }
+ls ($env.SWISS_HOME + "/commands") | where name !~ swiss_ | each { |it| dynSource $it.name }
 
 alias swiss-reload = source ~/.swiss_dyn
 alias swiss-install = ~/.swiss/script/installer/install.nu
     
 # do update with git resrcs
 def swiss-update [] {
-    cd $nu.env.SWISS_HOME
+    cd $env.SWISS_HOME
     git pull
-    nu ($nu.env.SWISS_HOME + "/script/updater/update.nu")
+    nu ($env.SWISS_HOME + "/script/updater/update.nu")
 }
 
 # Performs reconfiguration with your default shell
 def swiss-reconfigure [] {
-    cd $nu.env.SWISS_HOME
+    cd $env.SWISS_HOME
     nu "script/installer/install.nu"
     echo "Reconfiguration complete if you still having trouble use .sh or .ps1 instead"; char newline
 }
@@ -48,7 +48,7 @@ def silentInstall [
 def gitHelix [
     ...cmds # git args to run into helix repo
 ] {
-    let repoPath = ($nu.env.SWISS_HOME + "/submodules/helix/.git")
+    let repoPath = ($env.SWISS_HOME + "/submodules/helix/.git")
     let args = ($cmds | str collect " ")
     let gitCmd = $"git --git-dir ($repoPath) ($args)"
     nu -c $"($gitCmd)"
@@ -56,5 +56,5 @@ def gitHelix [
 
 # Show swiss help
 def swiss-help [] {
-    open ($nu.env.SWISS_HOME + "/README.md")
+    open ($env.SWISS_HOME + "/README.md")
 }

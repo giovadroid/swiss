@@ -1,14 +1,17 @@
 #!/usr/local/bin/nu
 
 # First step is to save current session env and path to config
-config set env $nu.env 
-config set path $nu.path
+# config set env $nu.env 
+# config set path $nu.path
 
 if ( $nu.env.SWISS_HOME == "" ) {
     echo "SWISS_HOME Not exists trying to create"; char newline
     let-env SWISS_HOME = (pwd)
-    config set env $nu.env | ignore
-} { }
+    # config set env $nu.env | ignore
+} 
+
+echo $env.SWISS_HOME;
+exit;
 
 source commands/print.nu;       
 source commands/createLink.nu;
