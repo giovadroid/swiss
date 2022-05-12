@@ -5,10 +5,10 @@ if file-exists ~/.cache/starship {} else {
     mkdir ~/.cache/starship
 }
 
-starship init nu | save ~/.cache/starship/init.nu;
+starship init nu | save --raw ~/.starship.nu;
 zoxide init nushell --hook prompt | save ~/.zoxide.nu;
 source ~/.zoxide.nu
-source ~/.cache/starship/init.nu
+source ~/.starship.nu
 
 # nu swiss env
 echo "" | save --raw ~/.swiss_dyn
@@ -20,4 +20,4 @@ source ~/.swiss/commands/swiss_init.nu
 # pathvar add ($nu.env.FNM_MULTISHELL_PATH + /bin);
 # source ~/.swiss_dyn
 
-char newline;
+# char newline;
