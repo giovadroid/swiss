@@ -88,3 +88,5 @@ All our scripts are on help menu
 - [ ] add upgrade support
 - [ ] reduce installation by cache install compilations
 - [ ] add nerd fonts fira and hack
+
+Add gitui
