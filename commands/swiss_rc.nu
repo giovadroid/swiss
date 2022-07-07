@@ -7,8 +7,9 @@ if file-exists ~/.cache/starship {} else {
 
 starship init nu | save --raw ~/.starship.nu;
 zoxide init nushell --hook prompt | save ~/.zoxide.nu;
-source ~/.zoxide.nu
 source ~/.starship.nu
+source ~/.zoxide.nu
+
 
 # nu swiss env
 echo "" | save --raw ~/.swiss_dyn
