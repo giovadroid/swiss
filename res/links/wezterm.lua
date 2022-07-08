@@ -27,7 +27,26 @@ wezterm.on("format-window-title", function(tab, pane, tabs, panes, config)
 end)
 
 return {
-    default_prog = {"nu.exe"},
+    font = wezterm.font_with_fallback({
+      "FiraCode Nerd Font",
+      "JetBrainsMono Nerd Font",
+    }),                              
+    font_size = 9.5,
+    -- You can specify some parameters to influence the font selection;
+    -- for example, this selects a Bold, Italic font variant.
+    -- font = wezterm.font("JetBrains Mono", {weight="Bold", italic=true}),    
+    unix_domains = {
+        {
+          name = "unix",
+        }
+      },
+    
+      -- This causes `wezterm` to act as though it was started as
+      -- `wezterm connect unix` by default, connecting to the unix
+      -- domain on startup.
+      -- If you prefer to connect manually, leave out this line.
+    default_gui_startup_args = {"connect", "unix"},
+    default_prog = {"nu"},
     color_scheme = "Hipster Green",
     font = wezterm.font("FiraCode Nerd Font"),
     initial_cols = 100,
@@ -108,14 +127,15 @@ return {
                 }
             }
         },
-
-        -- This will create a new split and run the `top` program inside it
-        key = "\"",
-        mods = "CTRL|SHIFT|ALT",
-        action = wezterm.action {
-            SplitVertical = {
-                args = {"top"}
-            }
+        {
+            -- This will create a new split and run the `top` program inside it
+            key = "\"",
+            mods = "CTRL|SHIFT|ALT",
+            action = wezterm.action {
+                SplitVertical = {
+                    args = {"top"}
+                }
+            },
         },
         -- This will create a new split and run the `top` program inside it
         {
