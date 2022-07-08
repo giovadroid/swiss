@@ -1,8 +1,8 @@
 local wezterm = require 'wezterm'
 
-local TabBackground = "#000"
-local TabForeground = "#aaa"
-local TabForegroundActive = "#fff"
+local TabBackground = "#262626"
+local TabForeground = "#c0b000"
+local TabForegroundActive = "#c0b18b"
 
 function string.split(str, sep)
     local t = {}
@@ -28,16 +28,17 @@ end)
 
 return {
     font = wezterm.font_with_fallback({
+      "FantasqueSansMono Nerd Font", 
       "FiraCode Nerd Font",
       "JetBrainsMono Nerd Font",
     }),                              
-    font_size = 9.5,
+    font_size = 13.0,
     -- You can specify some parameters to influence the font selection;
     -- for example, this selects a Bold, Italic font variant.
-    -- font = wezterm.font("JetBrains Mono", {weight="Bold", italic=true}),    
+    font = wezterm.font("FantasqueSansMono Nerd Font", {weight="Bold", italic=false}),    
     unix_domains = {
         {
-          name = "unix",
+          name = "local",
         }
       },
     
@@ -45,18 +46,25 @@ return {
       -- `wezterm connect unix` by default, connecting to the unix
       -- domain on startup.
       -- If you prefer to connect manually, leave out this line.
-    default_gui_startup_args = {"connect", "unix"},
+    -- default_gui_startup_args = {"connect", "unix"},
     default_prog = {"nu"},
-    color_scheme = "Hipster Green",
-    font = wezterm.font("FiraCode Nerd Font"),
+    -- color_scheme = "Whimsy",
+    -- color_scheme = "Sublette",
+    -- color_scheme = "Gruvbox Dark",
+    color_scheme = "Ayu Mirage",
     initial_cols = 100,
     initial_rows = 30,
-    font_size = 10,
-    default_cursor_style = "BlinkingBar",
+    default_cursor_style = "BlinkingBlock",
     cursor_blink_rate = 500,
     hide_tab_bar_if_only_one_tab = true,
-    window_background_opacity = 0.85,
+    window_background_opacity = 1.0,
     alternate_buffer_wheel_scroll_speed = 1,
+    window_padding = {
+        left = 20,
+        right = 20,
+        top = 20,   
+        bottom = 20
+    },
     colors = {
         tab_bar = {
             background = TabBackground,
@@ -91,15 +99,6 @@ return {
             mods = "CTRL",
             action = wezterm.action {
                 SpawnTab = "DefaultDomain"
-            }
-        },
-        {
-            key = "w",
-            mods = "CTRL",
-            action = wezterm.action {
-                CloseCurrentTab = {
-                    confirm = false
-                }
             }
         },
         {
