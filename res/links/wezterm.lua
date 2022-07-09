@@ -95,13 +95,6 @@ return {
     },
     keys = {
         {
-            key = "t",
-            mods = "CTRL",
-            action = wezterm.action {
-                SpawnTab = "DefaultDomain"
-            }
-        },
-        {
             key = "Tab",
             mods = "CTRL",
             action = wezterm.action {
@@ -119,7 +112,7 @@ return {
             -- This will create a new split and run your default program inside it
 
             key = "\"",
-            mods = "CTRL|SHIFT|ALT",
+            mods = "CTRL|SHIFT",
             action = wezterm.action {
                 SplitVertical = {
                     domain = "CurrentPaneDomain"
