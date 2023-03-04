@@ -1,6 +1,0 @@
-[submodule "submodules/helix"]
-	path = submodules/helix
-	url = https://github.com/helix-editor/helix
-[submodule "submodules/rust-analyzer"]
-	path = submodules/rust-analyzer
-	url = https://github.com/rust-analyzer/rust-analyzer
