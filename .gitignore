@@ -5,3 +5,9 @@
 .vscode/extensions.json
 .dyn
 yarn.lock
+
+
+# Added by cargo
+
+target
+.idea
