@@ -36,12 +36,7 @@ return {
     -- You can specify some parameters to influence the font selection;
     -- for example, this selects a Bold, Italic font variant.
     font = wezterm.font("FantasqueSansMono Nerd Font", {weight="Bold", italic=false}),    
-    unix_domains = {
-        {
-          name = "local",
-        }
-      },
-    
+
       -- This causes `wezterm` to act as though it was started as
       -- `wezterm connect unix` by default, connecting to the unix
       -- domain on startup.

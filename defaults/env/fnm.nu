@@ -8,11 +8,16 @@ def fnm-init-env [] {
 }
 
 def fnm-init-path [] {
-  if (sys).host.name == "Windows" {
-    $env.FNM_MULTISHELL_PATH | prepend $env.Path
+    let bin = ($env.FNM_MULTISHELL_PATH | path join "bin");
+  if (sys).host.name == "Windows" and ($env.Path | where $it =~ $bin | length) == 0 {
+    $env.Path | prepend $bin
+  } else if (sys).host.name != "Windows" and ($env.PATH | where $it =~ $bin | length) == 0 {
+    $env.PATH | prepend $bin
+  } else if (sys).host.name == "Windows" {
+    $env.Path
   } else {
-    $env.FNM_MULTISHELL_PATH | path join "bin" | prepend $env.PATH
-  }  
+    $env.PATH
+  }
 }
 
 load-env (fnm-init-env)
