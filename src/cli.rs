@@ -54,6 +54,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Install and update all components
+    #[cfg(debug_assertions)]
     Update {
         // TODO: add update options
     },
@@ -69,6 +70,7 @@ pub enum Command {
     },
 
     /// some call to random function
+    #[cfg(debug_assertions)]
     Test {
         /// runs nu install
         #[clap(short, long, default_value = "false")]

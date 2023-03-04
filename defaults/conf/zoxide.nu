@@ -10,8 +10,9 @@ if (not ($env | default false __zoxide_hooked | get __zoxide_hooked)) {
   let-env __zoxide_hooked = true
   let-env config = ($env | default {} config).config
   let-env config = ($env.config | default {} hooks)
-  let-env config = ($env.config | update hooks ($env.config.hooks | default [] pre_prompt))
-  let-env config = ($env.config | update hooks.pre_prompt ($env.config.hooks.pre_prompt | append {
+  let-env config = ($env.config | update hooks ($env.config.hooks | default {} env_change))
+  let-env config = ($env.config | update hooks.env_change ($env.config.hooks.env_change | default [] PWD))
+  let-env config = ($env.config | update hooks.env_change.PWD ($env.config.hooks.env_change.PWD | append {|_, dir|
     zoxide add -- $env.PWD
   }))
 }

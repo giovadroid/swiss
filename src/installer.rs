@@ -18,12 +18,16 @@ const ENV_NU: &str = include_str!("../defaults/env.nu");
 const CONF_NU: &[u8] = include_bytes!("../defaults/conf.nu");
 const FNM_NU: &[u8] = include_bytes!("../defaults/env/fnm.nu");
 const STARSHIP_NU: &[u8] = include_bytes!("../defaults/env/starship.nu");
-const ZOXIDE_NU: &[u8] = include_bytes!("../defaults/env/zoxide.nu");
+const ZOXIDE_NU: &[u8] = include_bytes!("../defaults/conf/zoxide.nu");
 
 const BUILT_HELIX_CONF: &[u8] = include_bytes!("../defaults/built-settings/helix.toml");
 const BUILT_STARSHIP_CONF: &[u8] = include_bytes!("../defaults/built-settings/starship.toml");
 const BUILT_IN_WEZTERM_CONF: &[u8] = include_bytes!("../defaults/built-settings/wezterm.lua");
 const BUILT_IN_ZELLIJ_CONF: &[u8] = include_bytes!("../defaults/built-settings/zellij.yaml");
+
+#[cfg(target_os = "macos")]
+const MACOS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
+
 
 pub(crate) const CONF_YAML: &str = include_str!("../defaults/swiss.yaml");
 
@@ -238,6 +242,14 @@ impl Installer {
         Ok(())
     }
 
+    pub fn delete_file(path: &PathBuf) -> InstallerResult<()> {
+        if path.exists() {
+            log::debug!("Disabling file {}", path.to_string_lossy());
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     pub fn create_folders(&mut self) -> InstallerResult<()> {
         let home = home::home_dir().unwrap();
         Self::check_directory(&home.join(".config/swiss/env"))?;
@@ -269,9 +281,23 @@ impl Installer {
             STARSHIP_NU,
             force,
         )?;
-        Self::check_file(&home.join(".config/swiss/env/zoxide.nu"), ZOXIDE_NU, force)?;
 
+        // Old versions has zoxide in env, so wi need to remove it
+        Self::delete_file(&home.join(".config/swiss/env/zoxide.nu"))?;
+        Self::check_file(&home.join(".config/swiss/conf/zoxide.nu"), ZOXIDE_NU, force)?;
+
+       #[cfg(not(target_os = "macos"))]
         Self::check_file(&home.join(".wezterm.lua"), BUILT_IN_WEZTERM_CONF, force)?;
+
+        #[cfg(target_os = "macos")]
+        {
+            let macos_nu_path = format!("\"{}\"", home.join(".cargo/bin/nu").to_string_lossy());
+            let wezterm_conf = String::from_utf8_lossy(BUILT_IN_WEZTERM_CONF).to_string().replace("\"nu\"", &macos_nu_path);
+            Self::check_file(&home.join(".wezterm.lua"), &wezterm_conf.into_bytes(), force)?;
+
+            Self::check_file(&home.join(".config/swiss/env/macos.nu"), MACOS_NU_ENV, force)?;
+        }
+
         Self::check_file(
             &home.join(".config/starship.toml"),
             BUILT_STARSHIP_CONF,

@@ -146,7 +146,9 @@ fn main() {
     let command_result = match &cli.command {
         Command::Init {} => command_init(),
         Command::Setup {} => command_setup(),
+        #[cfg(debug_assertions)]
         Command::Update {} => command_update(),
+        #[cfg(debug_assertions)]
         Command::Test { nu } => command_test(nu),
         Command::Files { force } => command_files(force),
     };
@@ -158,6 +160,7 @@ fn main() {
     }
 }
 
+#[cfg(debug_assertions)]
 fn command_test(nu: &bool) -> CommandResult<()> {
     let mut installer_tool = Installer::default();
 
