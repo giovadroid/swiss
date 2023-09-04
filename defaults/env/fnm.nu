@@ -22,6 +22,6 @@ def fnm-init-path [] {
 }
 
 load-env (fnm-init-env)
-let-env PATH  = (fnm-init-path)
+$env.PATH  = (fnm-init-path)
 # I´m not sure but in windows can used both
-let-env Path = $env.PATH
+$env.Path = $env.PATH

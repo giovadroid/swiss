@@ -9,10 +9,10 @@ use std::path::PathBuf;
 pub type InstallerResult<T> = Result<T, anyhow::Error>;
 
 #[cfg(not(target_os = "windows"))]
-const CARGO_PATH: &str = "let-env PATH = ($env.PATH | prepend ~/.cargo/bin)";
+const CARGO_PATH: &str = "$env.PATH = ($env.PATH | prepend ~/.cargo/bin)";
 
 #[cfg(target_os = "windows")]
-const CARGO_PATH: &str = "let-env Path = ($env.Path | prepend ~/.cargo/bin)\nlet-env PATH = $env.Path";
+const CARGO_PATH: &str = "$env.Path = ($env.Path | prepend ~/.cargo/bin)\n$env.PATH = $env.Path";
 
 const ENV_NU: &str = include_str!("../defaults/env.nu");
 const CONF_NU: &[u8] = include_bytes!("../defaults/conf.nu");
@@ -27,7 +27,6 @@ const BUILT_IN_ZELLIJ_CONF: &[u8] = include_bytes!("../defaults/built-settings/z
 
 #[cfg(target_os = "macos")]
 const MACOS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
-
 
 pub(crate) const CONF_YAML: &str = include_str!("../defaults/swiss.yaml");
 
@@ -269,10 +268,11 @@ impl Installer {
         Self::check_file(&home.join(".config/swiss/env.dyn.nu"), &[], force)?;
         Self::check_file(&home.join(".config/swiss/conf.dyn.nu"), &[], force)?;
 
-        Self::check_file(&home.join(".config/swiss/env.nu"),
-                         format!("{}\n{}", CARGO_PATH, ENV_NU).as_bytes(),
-                         force)?;
-
+        Self::check_file(
+            &home.join(".config/swiss/env.nu"),
+            format!("{}\n{}", CARGO_PATH, ENV_NU).as_bytes(),
+            force,
+        )?;
 
         Self::check_file(&home.join(".config/swiss/conf.nu"), CONF_NU, force)?;
         Self::check_file(&home.join(".config/swiss/env/fnm.nu"), FNM_NU, force)?;
@@ -286,16 +286,26 @@ impl Installer {
         Self::delete_file(&home.join(".config/swiss/env/zoxide.nu"))?;
         Self::check_file(&home.join(".config/swiss/conf/zoxide.nu"), ZOXIDE_NU, force)?;
 
-       #[cfg(not(target_os = "macos"))]
+        #[cfg(not(target_os = "macos"))]
         Self::check_file(&home.join(".wezterm.lua"), BUILT_IN_WEZTERM_CONF, force)?;
 
         #[cfg(target_os = "macos")]
         {
             let macos_nu_path = format!("\"{}\"", home.join(".cargo/bin/nu").to_string_lossy());
-            let wezterm_conf = String::from_utf8_lossy(BUILT_IN_WEZTERM_CONF).to_string().replace("\"nu\"", &macos_nu_path);
-            Self::check_file(&home.join(".wezterm.lua"), &wezterm_conf.into_bytes(), force)?;
+            let wezterm_conf = String::from_utf8_lossy(BUILT_IN_WEZTERM_CONF)
+                .to_string()
+                .replace("\"nu\"", &macos_nu_path);
+            Self::check_file(
+                &home.join(".wezterm.lua"),
+                &wezterm_conf.into_bytes(),
+                force,
+            )?;
 
-            Self::check_file(&home.join(".config/swiss/env/macos.nu"), MACOS_NU_ENV, force)?;
+            Self::check_file(
+                &home.join(".config/swiss/env/macos.nu"),
+                MACOS_NU_ENV,
+                force,
+            )?;
         }
 
         Self::check_file(
