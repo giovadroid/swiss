@@ -2,7 +2,7 @@ mod cargo;
 mod nu;
 
 pub use cargo::Cargo;
-pub use nu::{NuEnv, NuShell};
+pub use nu::{NuShell};
 
 use std::ffi::OsStr;
 use std::fmt::Debug;

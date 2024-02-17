@@ -54,6 +54,9 @@ pub struct CargoCustomConfig {
     pub macos: bool,
     #[serde(default)]
     pub alias: BTreeMap<String, String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+
 }
 
 impl Default for CargoCustomConfig {
@@ -64,6 +67,7 @@ impl Default for CargoCustomConfig {
             linux: default_as_true(),
             macos: default_as_true(),
             alias: BTreeMap::new(),
+            args: Vec::new(),
         }
     }
 }
@@ -82,7 +86,7 @@ impl CargoCustomConfig {
     }
 
     pub fn install(&self, crate_name: &str) -> CommandResult<String> {
-        commands::Cargo::install(self.package_name(crate_name).as_str())
+        commands::Cargo::install(self.package_name(crate_name).as_str(), &self.args)
     }
 
     #[cfg(target_os = "linux")]

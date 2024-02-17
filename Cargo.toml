@@ -1,6 +1,6 @@
 [package]
 name = "swiss"
-version = "1.0.3+alpha"
+version = "1.0.3+alpha.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,11 +13,12 @@ clap = { version = "4.4.2", features = ["derive"] }
 rkyv = { version = "0.7.42", features = ["bytecheck"] }
 bytecheck = "0.7.0"
 home = "0.5.5"
-env_logger = "0.10.0"
+env_logger = "0.11.2"
 log = "0.4.20"
 colored = "2.0.4"
 syntect = "5.1.0"
 anyhow = "1.0.75"
+lazy_static = "1.4.0"
 
 [dev-dependencies]
 indoc = "2.0.3"

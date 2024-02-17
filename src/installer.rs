@@ -1,34 +1,14 @@
 use crate::commands::NuShell;
 use crate::parser::SwissConfig;
 use crate::persistence::{
-    Dependency, DependencyStatus, DependencyType, SwissCache, FILES_KEY, FOLDERS_KEY, NUSHELL_DEP,
+    Dependency, DependencyStatus, DependencyType, FILES_KEY, FOLDERS_KEY, NUSHELL_DEP, SwissCache,
 };
-use crate::{NU_CONF_LOADER, NU_ENV_LOADER};
+use crate::{NU_CONF_LOADER, NU_ENV_LOADER, paths};
 use std::path::PathBuf;
+use crate::embedded::{BUILT_HELIX_CONF, BUILT_IN_ZELLIJ_CONF, BUILT_STARSHIP_CONF, CONF_NU, CONF_YAML, ENV_NU, FNM_NU, MACOS_NU_ENV, STARSHIP_NU, ZOXIDE_NU};
+use crate::paths::{CARGO_PATH, DYN_ENV};
 
 pub type InstallerResult<T> = Result<T, anyhow::Error>;
-
-#[cfg(not(target_os = "windows"))]
-const CARGO_PATH: &str = "$env.PATH = ($env.PATH | prepend ~/.cargo/bin)";
-
-#[cfg(target_os = "windows")]
-const CARGO_PATH: &str = "$env.Path = ($env.Path | prepend ~/.cargo/bin)\n$env.PATH = $env.Path";
-
-const ENV_NU: &str = include_str!("../defaults/env.nu");
-const CONF_NU: &[u8] = include_bytes!("../defaults/conf.nu");
-const FNM_NU: &[u8] = include_bytes!("../defaults/env/fnm.nu");
-const STARSHIP_NU: &[u8] = include_bytes!("../defaults/env/starship.nu");
-const ZOXIDE_NU: &[u8] = include_bytes!("../defaults/conf/zoxide.nu");
-
-const BUILT_HELIX_CONF: &[u8] = include_bytes!("../defaults/built-settings/helix.toml");
-const BUILT_STARSHIP_CONF: &[u8] = include_bytes!("../defaults/built-settings/starship.toml");
-const BUILT_IN_WEZTERM_CONF: &[u8] = include_bytes!("../defaults/built-settings/wezterm.lua");
-const BUILT_IN_ZELLIJ_CONF: &[u8] = include_bytes!("../defaults/built-settings/zellij.yaml");
-
-#[cfg(target_os = "macos")]
-const MACOS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
-
-pub(crate) const CONF_YAML: &str = include_str!("../defaults/swiss.yaml");
 
 #[derive(thiserror::Error, Debug)]
 pub enum InstallerError {
@@ -91,6 +71,31 @@ impl Installer {
             std::fs::write(&conf_path, conf_data)?;
             log::debug!("Added {} to {}", NU_CONF_LOADER, conf_path);
         }
+        Ok(())
+    }
+
+    pub fn install_binstall(&mut self) -> InstallerResult<()> {
+        for (name, config) in self.config.dependencies.cargo.iter() {
+            let config = config.clone().unwrap_or_default();
+            if name == "cargo-binstall" {
+                if let Err(error) = config.install(name) {
+                    log::error!("Installing cargo dependency error {}", error);
+                    continue;
+                }
+                self.cache.set_dep(
+                    name,
+                    &Dependency::new(
+                        name.to_owned(),
+                        Some(config.version.clone()),
+                        DependencyStatus::UpToDate,
+                        DependencyType::Cargo,
+                    ),
+                );
+
+                self.cache.set_aliases(&config.alias);
+            }
+        }
+
         Ok(())
     }
 
@@ -241,6 +246,7 @@ impl Installer {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn delete_file(path: &PathBuf) -> InstallerResult<()> {
         if path.exists() {
             log::debug!("Disabling file {}", path.to_string_lossy());
@@ -263,63 +269,48 @@ impl Installer {
     }
 
     pub fn create_files(&mut self, force: bool) -> InstallerResult<()> {
-        let home = home::home_dir().unwrap();
-
-        Self::check_file(&home.join(".config/swiss/env.dyn.nu"), &[], force)?;
-        Self::check_file(&home.join(".config/swiss/conf.dyn.nu"), &[], force)?;
+        Self::check_file(&paths::DYN_ENV, &[], force)?;
+        Self::check_file(&paths::DYN_CONF, &[], force)?;
 
         Self::check_file(
-            &home.join(".config/swiss/env.nu"),
+            &paths::SWISS_ENV,
             format!("{}\n{}", CARGO_PATH, ENV_NU).as_bytes(),
             force,
         )?;
 
-        Self::check_file(&home.join(".config/swiss/conf.nu"), CONF_NU, force)?;
-        Self::check_file(&home.join(".config/swiss/env/fnm.nu"), FNM_NU, force)?;
+        Self::check_file(&paths::SWISS_CONF, CONF_NU, force)?;
+        Self::check_file(&paths::ENV_FOLDER.join("fnm.nu"), FNM_NU, force)?;
         Self::check_file(
-            &home.join(".config/swiss/env/starship.nu"),
+            &paths::ENV_FOLDER.join("starship.nu"),
             STARSHIP_NU,
             force,
         )?;
 
         // Old versions has zoxide in env, so wi need to remove it
-        Self::delete_file(&home.join(".config/swiss/env/zoxide.nu"))?;
-        Self::check_file(&home.join(".config/swiss/conf/zoxide.nu"), ZOXIDE_NU, force)?;
-
-        #[cfg(not(target_os = "macos"))]
-        Self::check_file(&home.join(".wezterm.lua"), BUILT_IN_WEZTERM_CONF, force)?;
+        // Self::delete_file(&paths::CONFIG_HOME.join("env/zoxide.nu"))?;
+        Self::check_file(&paths::CONF_FOLDER.join("zoxide.nu"), ZOXIDE_NU, force)?;
 
         #[cfg(target_os = "macos")]
         {
-            let macos_nu_path = format!("\"{}\"", home.join(".cargo/bin/nu").to_string_lossy());
-            let wezterm_conf = String::from_utf8_lossy(BUILT_IN_WEZTERM_CONF)
-                .to_string()
-                .replace("\"nu\"", &macos_nu_path);
             Self::check_file(
-                &home.join(".wezterm.lua"),
-                &wezterm_conf.into_bytes(),
-                force,
-            )?;
-
-            Self::check_file(
-                &home.join(".config/swiss/env/macos.nu"),
+                &paths::ENV_FOLDER.join("macos.nu"),
                 MACOS_NU_ENV,
                 force,
             )?;
         }
 
         Self::check_file(
-            &home.join(".config/starship.toml"),
+            &paths::CONFIG_PATH.join("starship.toml"),
             BUILT_STARSHIP_CONF,
             force,
         )?;
         Self::check_file(
-            &home.join(".config/helix/helix.toml"),
+            &paths::CONFIG_PATH.join("helix").join("helix.toml"),
             BUILT_HELIX_CONF,
             force,
         )?;
         Self::check_file(
-            &home.join(".config/zellij/config.yaml"),
+            &paths::CONFIG_PATH.join("zellij").join("config.yaml"),
             BUILT_IN_ZELLIJ_CONF,
             force,
         )?;

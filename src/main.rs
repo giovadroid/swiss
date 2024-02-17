@@ -7,6 +7,8 @@ mod loader;
 mod logger;
 mod parser;
 mod persistence;
+mod paths;
+mod embedded;
 
 use crate::commands::CommandResult;
 use crate::installer::{Installer, InstallerError};
@@ -20,12 +22,6 @@ use std::collections::HashMap;
 pub enum CommandError {
     #[error("Default error")]
     DefaultError,
-    // #[error("Installer error: {0}")]
-    // InstallerError(#[from] InstallerError),
-    // // #[error("Loader error: {0}")]
-    // // LoaderError(#[from] loader::LoaderError),
-    // #[error("Configuration error: {0}")]
-    // ConfigurationError(#[from] serde_yaml::Error),
 }
 
 /// The initializer for nu shell
@@ -115,6 +111,8 @@ pub fn command_setup() -> CommandResult<()> {
     installer_tool.prepare_latest_nu()?;
 
     installer_tool.create_folders()?;
+
+    installer_tool.install_binstall()?;
 
     installer_tool.install_cargo()?;
 

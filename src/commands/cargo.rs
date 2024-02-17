@@ -4,18 +4,17 @@ use home::home_dir;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 
+#[derive(Debug, Default)]
 pub struct Cargo {}
 const BIN_PATH: &str = ".cargo/bin/cargo";
-impl Default for Cargo {
-    fn default() -> Self {
-        Self {}
-    }
-}
+const INSTALL_COMMAND: &str = "binstall";
 
 impl Cargo {
-    pub fn install(package: &str) -> CommandResult<String> {
+    pub fn install(package: &str, args: &[String]) -> CommandResult<String> {
         log::info!("Installing {}", package);
-        Self::run(&["install", package, "-j", "2"], None)
+        let mut run_args = vec![INSTALL_COMMAND.to_owned(), "-y".to_owned(), package.to_owned()];
+        run_args.extend(args.iter().cloned());
+        Self::run(&run_args, None)
     }
 
     fn get_bin_path() -> CommandResult<String> {

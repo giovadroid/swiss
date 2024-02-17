@@ -4,6 +4,7 @@ dependencies:
     # https://github.com/emilk/egui
     # https://github.com/copy/v86
     # https://github.com/babysor/MockingBird
+    cargo-binstall:
     cargo-watch:
     cargo-update:
     cargo-edit:
@@ -19,6 +20,8 @@ dependencies:
     dua-cli:
     bottom:
     zoxide:
+      args:
+        - "--locked"
       alias:
         cdi: "__zoxide_zi"
         cd: "__zoxide_z"
@@ -104,7 +107,7 @@ rust:
     linux: 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
     macos: 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
     windows: 'TODO: Add nu script'
-package-manager:
+package_manager:
   packages:
     - fzf
   linux:
@@ -128,4 +131,4 @@ package-manager:
         - cmake
       install: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 nushell:
-  version: "0.84.0"
+  version: "0.90.1"
