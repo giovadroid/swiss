@@ -1,12 +1,15 @@
 use crate::commands::NuShell;
-use crate::parser::SwissConfig;
-use crate::persistence::{
-    Dependency, DependencyStatus, DependencyType, FILES_KEY, FOLDERS_KEY, NUSHELL_DEP, SwissCache,
+use crate::embedded::{
+    BUILT_HELIX_CONF, BUILT_IN_ZELLIJ_CONF, BUILT_STARSHIP_CONF, CONF_NU, CONF_YAML, ENV_NU,
+    FNM_NU, OS_NU_ENV, STARSHIP_NU, ZOXIDE_NU,
 };
-use crate::{NU_CONF_LOADER, NU_ENV_LOADER, paths};
+use crate::parser::SwissConfig;
+use crate::paths::CARGO_PATH;
+use crate::persistence::{
+    Dependency, DependencyStatus, DependencyType, SwissCache, FILES_KEY, FOLDERS_KEY, NUSHELL_DEP,
+};
+use crate::{paths, NU_CONF_LOADER, NU_ENV_LOADER};
 use std::path::PathBuf;
-use crate::embedded::{BUILT_HELIX_CONF, BUILT_IN_ZELLIJ_CONF, BUILT_STARSHIP_CONF, CONF_NU, CONF_YAML, ENV_NU, FNM_NU, MACOS_NU_ENV, STARSHIP_NU, ZOXIDE_NU};
-use crate::paths::{CARGO_PATH, DYN_ENV};
 
 pub type InstallerResult<T> = Result<T, anyhow::Error>;
 
@@ -280,24 +283,13 @@ impl Installer {
 
         Self::check_file(&paths::SWISS_CONF, CONF_NU, force)?;
         Self::check_file(&paths::ENV_FOLDER.join("fnm.nu"), FNM_NU, force)?;
-        Self::check_file(
-            &paths::ENV_FOLDER.join("starship.nu"),
-            STARSHIP_NU,
-            force,
-        )?;
+        Self::check_file(&paths::ENV_FOLDER.join("starship.nu"), STARSHIP_NU, force)?;
 
         // Old versions has zoxide in env, so wi need to remove it
         // Self::delete_file(&paths::CONFIG_HOME.join("env/zoxide.nu"))?;
         Self::check_file(&paths::CONF_FOLDER.join("zoxide.nu"), ZOXIDE_NU, force)?;
 
-        #[cfg(target_os = "macos")]
-        {
-            Self::check_file(
-                &paths::ENV_FOLDER.join("macos.nu"),
-                MACOS_NU_ENV,
-                force,
-            )?;
-        }
+        Self::check_file(&paths::OS_ENV, OS_NU_ENV, force)?;
 
         Self::check_file(
             &paths::CONFIG_PATH.join("starship.toml"),

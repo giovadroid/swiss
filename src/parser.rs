@@ -56,7 +56,6 @@ pub struct CargoCustomConfig {
     pub alias: BTreeMap<String, String>,
     #[serde(default)]
     pub args: Vec<String>,
-
 }
 
 impl Default for CargoCustomConfig {
@@ -149,6 +148,7 @@ mod tests {
         }
     }
 
+    #[allow(unused)]
     fn temp_example() -> &'static str {
         let yaml = indoc::indoc! {r#"
        dependencies:
@@ -176,9 +176,10 @@ mod tests {
     }
 
     fn raw_example() -> &'static str {
-        crate::installer::CONF_YAML
+        crate::embedded::CONF_YAML
     }
 
+    #[allow(unused)]
     fn basic_yaml_example() -> &'static str {
         r#"
         dependencies:

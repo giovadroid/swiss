@@ -11,4 +11,7 @@ pub const BUILT_IN_ZELLIJ_CONF: &[u8] = include_bytes!("../defaults/built-settin
 #[cfg(target_os = "macos")]
 pub const MACOS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
 
-pub(crate) const CONF_YAML: &str = include_str!("../defaults/swiss.yaml");
+#[cfg(not(target_os = "macos"))]
+pub const OS_NU_ENV: &[u8] = &[];
+
+pub const CONF_YAML: &str = include_str!("../defaults/swiss.yaml");

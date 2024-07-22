@@ -11,6 +11,7 @@ const CACHE_PATH: &str = ".config/swiss/.cache";
 pub(crate) const CUSTOM_MODULES_PATH: &str = ".config/swiss/crates/";
 pub(crate) const NU_ENV_LOADER: &str = "source ~/.config/swiss/env.nu;";
 pub(crate) const NU_CONF_LOADER: &str = "source ~/.config/swiss/conf.nu;";
+#[allow(unused)]
 pub(crate) const DEFAULT_YAML: &str = "default.yaml";
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
