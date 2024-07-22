@@ -32,12 +32,12 @@ pub fn colorize_string(s: String) -> String {
 
 pub fn init(verbose: bool) {
     let level = if verbose || cfg!(debug_assertions) {
-        "debug"
+        log::Level::Debug
     } else {
-        "info"
+        log::Level::Info
     };
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level.to_string()))
         .format(|buf, record| {
             writeln!(
                 buf,
