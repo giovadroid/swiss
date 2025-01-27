@@ -91,6 +91,16 @@ impl NuShell {
         }
         Ok(())
     }
+
+    fn default_config() -> CommandResult<String> {
+        let config = NuShell::run(&["-c", "config env --default | save $nu.env-path"], None)?;
+        Ok(config)
+    }
+
+    fn default_env() -> CommandResult<String> {
+        let env = NuShell::run(&["-c", "config env --default | save $nu.env-path"], None)?;
+        Ok(env)
+    }
 }
 
 pub struct NuEnv {}

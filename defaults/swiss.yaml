@@ -131,4 +131,4 @@ package_manager:
         - cmake
       install: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 nushell:
-  version: "0.95.0"
+  version: "0.101.0"

@@ -9,7 +9,7 @@ pub const BUILT_STARSHIP_CONF: &[u8] = include_bytes!("../defaults/built-setting
 pub const BUILT_IN_ZELLIJ_CONF: &[u8] = include_bytes!("../defaults/built-settings/zellij.yaml");
 
 #[cfg(target_os = "macos")]
-pub const MACOS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
+pub const OS_NU_ENV: &[u8] = include_bytes!("../defaults/env/macos.nu");
 
 #[cfg(not(target_os = "macos"))]
 pub const OS_NU_ENV: &[u8] = &[];
