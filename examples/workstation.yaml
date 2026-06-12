@@ -111,8 +111,6 @@ dependencies:
           - "ln -s (echo $env.PWD \"/runtime\" | str collect )  ~/.config/helix/runtime"
         windows:
           - "mklink /D \"%APPDATA%\\Helix\\runtime\" (echo $env.PWD \"\\runtime\" | str collect )"
-      uninstall:
-        - "cargo uninstall --path helix-term"
     wezterm:
       git:
         repo: "https://github.com/wez/wezterm"
@@ -125,9 +123,6 @@ dependencies:
       post-install:
         linux:
           - "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| cp $it.name /usr/local/bin }"
-      pre-uninstall:
-        linux:
-          - "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| rm (echo /usr/local/bin/ $it.name | str collect) }"
       windows: false
       macos: false
 

@@ -82,6 +82,7 @@ pub fn load_alias_into_nu(
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct DynamicFolderLoader {
     file: PathBuf,
     folders: Vec<PathBuf>,
@@ -97,16 +98,8 @@ impl DynamicFolderLoader {
         }
     }
 
-    pub fn copy(&self) -> Self {
-        Self {
-            file: self.file.clone(),
-            folders: self.folders.clone(),
-            filter: self.filter.clone(),
-        }
-    }
-
     pub fn write(&self) -> LoaderResult<JoinHandle<()>> {
-        let me = self.copy();
+        let me = self.clone();
         let handle = std::thread::spawn(move || {
             if let Ok(mut buffer_file) = std::fs::File::create(&me.file) {
                 log::debug!("Creating: {}", me.file.display());

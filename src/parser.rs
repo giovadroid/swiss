@@ -204,8 +204,6 @@ pub struct CustomDependency {
     #[serde(default)]
     pub install: Option<Vec<CommandSpec>>,
     #[serde(default)]
-    pub uninstall: Option<Vec<CommandSpec>>,
-    #[serde(default)]
     pub git: Option<GitConfig>,
     #[serde(default)]
     pub windows: Option<bool>,
@@ -215,8 +213,6 @@ pub struct CustomDependency {
     pub macos: Option<bool>,
     #[serde(default, rename = "post-install")]
     pub post_install: Option<OsCommands>,
-    #[serde(default, rename = "pre-uninstall")]
-    pub pre_uninstall: Option<OsCommands>,
 }
 
 impl CustomDependency {
@@ -264,8 +260,6 @@ pub type OsScripts = OsCommands;
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageManagerConfig {
     #[serde(default)]
-    pub packages: Vec<String>,
-    #[serde(default)]
     pub linux: Option<LinuxPackageManagerConfig>,
     #[serde(default)]
     pub windows: Option<WindowsPackageManagerConfig>,
@@ -295,10 +289,6 @@ pub struct MacosPackageManagerConfig {
 pub struct PackageManagerBackendConfig {
     #[serde(default)]
     pub packages: Vec<String>,
-    #[serde(default)]
-    pub install: Option<String>,
-    #[serde(default)]
-    pub remove: Option<String>,
     /// Run the manager refresh (e.g. `apt-get update`) before installing.
     #[serde(default)]
     pub update_index: bool,

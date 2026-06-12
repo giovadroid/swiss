@@ -135,22 +135,15 @@ fn all_commands(config: &SwissConfig) -> Vec<(String, CommandSpec)> {
 
     for (name, dependency) in &config.dependencies.customs {
         let label = format!("custom dependency '{}'", name);
-        for list in [
-            &dependency.install,
-            &dependency.update,
-            &dependency.uninstall,
-        ]
-        .into_iter()
-        .flatten()
+        for list in [&dependency.install, &dependency.update]
+            .into_iter()
+            .flatten()
         {
             for command in list {
                 commands.push((label.clone(), command.clone()));
             }
         }
-        for hooks in [&dependency.post_install, &dependency.pre_uninstall]
-            .into_iter()
-            .flatten()
-        {
+        if let Some(hooks) = &dependency.post_install {
             for list in [&hooks.linux, &hooks.macos, &hooks.windows]
                 .into_iter()
                 .flatten()

@@ -128,15 +128,8 @@ pub fn upsert_block(existing: &str, name: &str, content: &str) -> String {
     output
 }
 
-fn posix_path_entry(entry: &str) -> String {
-    if let Some(rest) = entry.strip_prefix("~/") {
-        format!("$HOME/{}", rest)
-    } else {
-        entry.to_owned()
-    }
-}
-
-fn pwsh_path_entry(entry: &str) -> String {
+/// `~/x` becomes `$HOME/x`; both POSIX shells and PowerShell expand `$HOME`.
+fn home_path_entry(entry: &str) -> String {
     if let Some(rest) = entry.strip_prefix("~/") {
         format!("$HOME/{}", rest)
     } else {
@@ -156,15 +149,13 @@ pub fn render_module(kind: ShellKind, spec: &ShellModuleSpec) -> Option<String> 
             }
             (ShellKind::Zsh | ShellKind::Bash, EnvValue::PathOps { prepend, append }) => {
                 if !prepend.is_empty() {
-                    let joined: Vec<String> = prepend
-                        .iter()
-                        .map(|entry| posix_path_entry(entry))
-                        .collect();
+                    let joined: Vec<String> =
+                        prepend.iter().map(|entry| home_path_entry(entry)).collect();
                     let _ = writeln!(body, "export {}=\"{}:${}\"", name, joined.join(":"), name);
                 }
                 if !append.is_empty() {
                     let joined: Vec<String> =
-                        append.iter().map(|entry| posix_path_entry(entry)).collect();
+                        append.iter().map(|entry| home_path_entry(entry)).collect();
                     let _ = writeln!(body, "export {}=\"${}:{}\"", name, name, joined.join(":"));
                 }
             }
@@ -177,7 +168,7 @@ pub fn render_module(kind: ShellKind, spec: &ShellModuleSpec) -> Option<String> 
                         body,
                         "$env:{} = \"{}\" + [IO.Path]::PathSeparator + $env:{}",
                         name,
-                        pwsh_path_entry(entry),
+                        home_path_entry(entry),
                         name
                     );
                 }
@@ -187,7 +178,7 @@ pub fn render_module(kind: ShellKind, spec: &ShellModuleSpec) -> Option<String> 
                         "$env:{} = $env:{} + [IO.Path]::PathSeparator + \"{}\"",
                         name,
                         name,
-                        pwsh_path_entry(entry)
+                        home_path_entry(entry)
                     );
                 }
             }
