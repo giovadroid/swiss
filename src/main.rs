@@ -195,7 +195,6 @@ fn command_apply(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn command_setup(
     args: &ManifestArgs,
     template: Option<&str>,

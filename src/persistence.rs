@@ -1,7 +1,7 @@
 use anyhow::Result;
-use bytecheck::CheckBytes;
-use rkyv::ser::{serializers::AllocSerializer, Serializer};
-use rkyv::{check_archived_root, AlignedVec, Archive, Deserialize, Serialize};
+use rkyv::rancor::Error as RancorError;
+use rkyv::util::AlignedVec;
+use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 pub const NUSHELL_DEP: &str = "nushell";
@@ -15,7 +15,7 @@ pub(crate) const NU_ENV_LOADER: &str = "source ~/.config/swiss/env.nu;";
 pub(crate) const NU_CONF_LOADER: &str = "source ~/.config/swiss/conf.nu;";
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
-#[archive_attr(derive(CheckBytes, Debug))]
+#[rkyv(derive(Debug))]
 pub struct SwissCache {
     inner: HashMap<String, String>,
     deps: HashMap<String, Dependency>,
@@ -23,7 +23,7 @@ pub struct SwissCache {
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
-#[archive_attr(derive(CheckBytes, Debug))]
+#[rkyv(derive(Debug))]
 pub struct Dependency {
     pub(crate) name: String,
     pub(crate) version: Option<String>,
@@ -32,7 +32,7 @@ pub struct Dependency {
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
-#[archive_attr(derive(CheckBytes, Debug))]
+#[rkyv(derive(Debug))]
 pub enum DependencyStatus {
     Installed,
     #[default]
@@ -51,7 +51,7 @@ impl DependencyStatus {
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
-#[archive_attr(derive(CheckBytes, Debug))]
+#[rkyv(derive(Debug))]
 pub enum DependencyType {
     Cargo,
     #[default]
@@ -132,10 +132,11 @@ impl SwissCache {
 
     /// Deserialize the cache from a byte slice.
     pub(super) fn deserialize(bytes: Vec<u8>) -> SwissCache {
-        match check_archived_root::<SwissCache>(&bytes) {
-            Ok(archived) => archived
-                .deserialize(&mut rkyv::Infallible)
-                .expect("Swiss cache deserialization cannot fail after validation"),
+        // Re-align: bytes read from disk carry no alignment guarantee.
+        let mut aligned = AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes);
+        match rkyv::from_bytes::<SwissCache, RancorError>(&aligned) {
+            Ok(cache) => cache,
             Err(error) => {
                 log::warn!("Ignoring invalid Swiss cache: {}", error);
                 SwissCache::default()
@@ -145,9 +146,7 @@ impl SwissCache {
 
     /// Serialize the cache to a byte slice.
     pub(super) fn serialize(&self) -> AlignedVec {
-        let mut serializer = AllocSerializer::<0>::default();
-        serializer.serialize_value(&self.clone()).unwrap();
-        serializer.into_serializer().into_inner()
+        rkyv::to_bytes::<RancorError>(self).expect("Swiss cache serialization cannot fail")
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

@@ -1,4 +1,4 @@
-//! Starter manifests embedded only for `swiss init-config` and tests.
+//! Starter manifests embedded only for `swiss setup --template` and tests.
 //! Swiss no longer auto-applies any embedded bootstrap manifest.
 
 pub const WORKSTATION_YAML: &str = include_str!("../examples/workstation.yaml");

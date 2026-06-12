@@ -700,7 +700,6 @@ mod tests {
                         ..PackageManagerBackendConfig::default()
                     }),
                 }),
-                ..PackageManagerConfig::default()
             },
             ..SwissConfig::default()
         }

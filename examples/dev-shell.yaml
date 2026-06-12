@@ -1,7 +1,7 @@
 # Minimal developer shell: a few cargo tools plus zsh/bash snippets.
 # A good starting point for your own manifest:
 #
-#   swiss init-config --template dev-shell --output bootstrap.yaml
+#   swiss setup --manifest bootstrap.yaml --template dev-shell
 #   swiss plan  --manifest bootstrap.yaml
 #   swiss apply --manifest bootstrap.yaml
 

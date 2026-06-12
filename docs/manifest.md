@@ -69,9 +69,10 @@ rust:
     linux: ['curl https://sh.rustup.rs -sSf | sh -s -- -y']
 ```
 
-`components` become `rustup component add <name>` steps. `installer` documents how
-to bootstrap Rust per OS (Swiss itself is a Rust binary, so the real first
-bootstrap is a prebuilt release or an existing toolchain).
+`components` become `rustup component add <name>` steps. `toolchain` and
+`installer` are informational: they document how to bootstrap Rust per OS
+(Swiss itself is a Rust binary, so the real first bootstrap is a prebuilt
+release or an existing toolchain).
 
 ### `package_manager`
 
@@ -128,7 +129,6 @@ dependencies:
       update:  ["cargo install --path helix-term"]   # used on re-runs
       post-install:                                   # first install only, per OS
         linux: ["ln -s ..."]                          # macOS falls back to linux
-      uninstall: []
       linux: true                                     # OS gates
 ```
 

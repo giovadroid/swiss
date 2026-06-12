@@ -175,3 +175,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all --locked
 ```
+
+## License
+
+Swiss is released under the [GNU General Public License v3.0](LICENSE).

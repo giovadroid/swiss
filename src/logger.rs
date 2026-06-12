@@ -23,13 +23,6 @@ impl std::fmt::Display for ColoredLevel {
     }
 }
 
-pub fn colorize_string(s: String) -> String {
-    // TODO: Add colorizing for strings e.g. "This is a message \"String\"")
-    //       or files.
-
-    s
-}
-
 pub fn init(verbose: bool) {
     let level = if verbose || cfg!(debug_assertions) {
         log::Level::Debug
@@ -43,7 +36,7 @@ pub fn init(verbose: bool) {
                 buf,
                 "{} - {}",
                 ColoredLevel::from(record.level()),
-                colorize_string(record.args().to_string())
+                record.args()
             )
         })
         .init();

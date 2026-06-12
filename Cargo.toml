@@ -1,25 +1,27 @@
 [package]
 name = "swiss"
-version = "1.0.3+alpha.3"
+version = "1.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "A generic, file-driven bootstrapper for workstations and service hosts: installs packages, tools, repositories, files and shell integration from explicit YAML manifests"
+repository = "https://github.com/giovadroid/swiss"
+license = "GPL-3.0-only"
+readme = "README.md"
+keywords = ["bootstrap", "dotfiles", "provisioning", "cli", "shell"]
+categories = ["command-line-utilities", "config"]
+# Distributed through GitHub releases only; keep off crates.io.
+publish = false
 
 [dependencies]
-thiserror = "1.0.48"
-serde = { version = "1.0.188", features = ["derive"] }
-serde_yaml = { version = "0.9.25" }
-clap = { version = "4.4.2", features = ["derive"] }
-rkyv = { version = "0.7.42", features = ["bytecheck", "validation"] }
-bytecheck = "0.6.12"
-home = "0.5.5"
-env_logger = "0.11.2"
-log = "0.4.20"
-colored = "2.0.4"
-syntect = "5.1.0"
-anyhow = "1.0.75"
-lazy_static = "1.4.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_yaml = { version = "0.9.34" }
+clap = { version = "4.6.1", features = ["derive"] }
+rkyv = "0.8.12"
+home = "0.5.12"
+env_logger = "0.11.10"
+log = "0.4.28"
+colored = "3.1.1"
+anyhow = "1.0.102"
 
 [dev-dependencies]
-indoc = "2.0.3"
-tempfile = "3.10"
+indoc = "2.0.7"
+tempfile = "3.24"
