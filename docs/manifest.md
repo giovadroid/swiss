@@ -1,8 +1,8 @@
 # Swiss manifest reference
 
-A manifest is a YAML file passed to `swiss plan/apply/setup/files/shell` with
+A manifest is a YAML file passed to `swiss plan/apply/setup/doctor` with
 `--manifest <path>`. All sections are optional; an empty manifest is a valid
-(empty) plan.
+(empty) plan. Validate any manifest with `swiss doctor -m <path>`.
 
 ## Composition
 
@@ -212,9 +212,12 @@ Modes:
 - `managed-loader` (Nushell only): Swiss generates
   `~/.config/swiss/{env.nu,conf.nu}` plus the dynamic files and per-module files,
   then patches `$nu.env-path` / `$nu.config-path` once.
-- `snippet`: bounded `# swiss begin/end` blocks patched into `target`.
-- `profile`: like snippet, but the default target is PowerShell's `$PROFILE`.
-- `print`: never written during apply; use `swiss shell print`.
+- `snippet`: Swiss generates one init file under `~/.config/swiss`
+  (`init.zsh` / `init.bash`) containing every module as a bounded block, and
+  patches a single `# swiss begin: init` block into `target` that sources it.
+- `profile`: like snippet, but the default target is PowerShell's `$PROFILE`
+  and the generated file is `init.ps1`.
+- `print`: never written during apply; print with `swiss init --shell <name>`.
 
 ### `shell_modules`
 

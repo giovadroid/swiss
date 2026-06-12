@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod config_loader;
+mod doctor;
 mod embedded;
 mod executor;
 mod expand;
@@ -11,23 +12,56 @@ mod persistence;
 mod plan;
 mod shellgen;
 
-use crate::cli::{Command, ManifestArgs, ShellCommand};
+use crate::cli::{Command, ManifestArgs};
 use crate::commands::{CommandResult, NuShell};
 use crate::config_loader::LoadedManifest;
 use crate::executor::Executor;
 use crate::parser::Os;
-use crate::persistence::{SwissCache, FINGERPRINT_KEY, VERSION};
-use crate::plan::{build_plan, Plan, PlanContext};
+use crate::persistence::{
+    SwissCache, FINGERPRINT_KEY, MANIFEST_PATH_KEY, MANIFEST_PROFILES_KEY, VERSION,
+};
+use crate::plan::{build_plan, Plan, PlanContext, Step};
 use crate::shellgen::ShellKind;
 use anyhow::{bail, Context};
 use clap::Parser;
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
-/// The initializer for nu shell.
-/// Aggregates ~/.config/swiss/{env,conf} and ~/.swiss/{env,conf} into the
-/// dynamic loader files and prints the Swiss environment as YAML.
-fn command_init() -> CommandResult<()> {
+/// `swiss init [--shell <name>]`: the per-shell startup hook.
+///
+/// - nushell (default): aggregates the dynamic loader files and prints the
+///   Swiss environment as YAML for `load-env`.
+/// - zsh/bash/pwsh: prints the generated init file so it can be sourced or
+///   evaluated manually (`eval "$(swiss init --shell zsh)"`).
+fn command_init(shell: Option<&str>) -> CommandResult<()> {
+    let kind = match shell {
+        None => ShellKind::Nushell,
+        Some(name) => {
+            ShellKind::from_name(name).ok_or_else(|| anyhow::anyhow!("Unknown shell '{}'", name))?
+        }
+    };
+
+    if kind == ShellKind::Nushell {
+        return command_init_nu();
+    }
+
+    let init_file = home::home_dir()
+        .context("Unable to obtain home directory")?
+        .join(".config/swiss")
+        .join(kind.init_file_name().expect("non-nushell init file"));
+    if init_file.exists() {
+        print!("{}", std::fs::read_to_string(init_file)?);
+    } else {
+        log::debug!(
+            "No generated init for {} yet; run `swiss setup` first",
+            kind.name()
+        );
+    }
+    Ok(())
+}
+
+fn command_init_nu() -> CommandResult<()> {
     let (home_dir, user_dir) = loader::initialize_nu_files()?;
     let data_envs: HashMap<String, String> = HashMap::from_iter(vec![
         ("SWISS_VERSION".to_string(), VERSION.to_string()),
@@ -54,10 +88,10 @@ fn command_init() -> CommandResult<()> {
     Ok(())
 }
 
-fn load_manifest(args: &ManifestArgs) -> CommandResult<LoadedManifest> {
-    config_loader::load_manifest(&args.manifest, &args.profiles).context(
+fn load_manifest(path: &Path, profiles: &[String]) -> CommandResult<LoadedManifest> {
+    config_loader::load_manifest(path, profiles).context(
         "Could not load the bootstrap manifest. Pass one with --manifest <path>, \
-         or generate a starter with `swiss init-config --output bootstrap.yaml`",
+         or generate a starter with `swiss setup --manifest bootstrap.yaml --template dev-shell`",
     )
 }
 
@@ -101,24 +135,32 @@ fn confirm(plan: &Plan, yes: bool) -> CommandResult<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-fn execute_plan(plan: &Plan, manifest: &LoadedManifest, yes: bool) -> CommandResult<()> {
+/// Stores the manifest path and profiles so `swiss update` can re-apply them.
+fn register_manifest(path: &Path, profiles: &[String]) {
+    let mut cache = SwissCache::load().unwrap_or_default();
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    cache.set(MANIFEST_PATH_KEY, &canonical.to_string_lossy());
+    cache.set(MANIFEST_PROFILES_KEY, &profiles.join("\n"));
+}
+
+fn execute_plan(plan: &Plan, manifest: &LoadedManifest, yes: bool) -> CommandResult<bool> {
     if plan.is_empty() {
         println!("Nothing to do: everything is up to date.");
-        return Ok(());
+        return Ok(true);
     }
     if !confirm(plan, yes)? {
         println!("Aborted.");
-        return Ok(());
+        return Ok(false);
     }
     apply_env_defaults(manifest);
     let mut executor = Executor::new(SwissCache::load().unwrap_or_default());
     executor.execute(plan, Some(&manifest.fingerprint))?;
     println!("Done: {} step(s) applied.", plan.steps.len());
-    Ok(())
+    Ok(true)
 }
 
 fn command_plan(args: &ManifestArgs) -> CommandResult<()> {
-    let manifest = load_manifest(args)?;
+    let manifest = load_manifest(&args.manifest, &args.profiles)?;
     let context = plan_context(&manifest);
     let plan = build_plan(&manifest, &context)?;
     println!("{}", plan.render());
@@ -129,11 +171,14 @@ fn command_apply(
     args: &ManifestArgs,
     yes: bool,
     dry_run: bool,
-    first_run_checks: bool,
+    force_files: bool,
 ) -> CommandResult<()> {
-    let manifest = load_manifest(args)?;
+    let manifest = load_manifest(&args.manifest, &args.profiles)?;
     let context = plan_context(&manifest);
-    let plan = build_plan(&manifest, &context)?;
+    let mut plan = build_plan(&manifest, &context)?;
+    if force_files {
+        plan = plan.force_file_overwrites();
+    }
 
     if dry_run {
         println!("{}", plan.render());
@@ -141,93 +186,238 @@ fn command_apply(
     }
 
     if plan.requires_admin() && !executor::is_admin()? {
-        if first_run_checks {
-            bail!(
-                "This plan contains steps that require administrator rights. \
-                 Re-run as administrator, or use `swiss apply` to proceed anyway."
-            );
-        }
         log::warn!("Some steps require administrator rights and may fail.");
     }
 
-    execute_plan(&plan, &manifest, yes)
-}
-
-fn command_files(args: &ManifestArgs, force: bool) -> CommandResult<()> {
-    let manifest = load_manifest(args)?;
-    let context = plan_context(&manifest);
-    let plan = build_plan(&manifest, &context)?.file_steps(force);
-
-    if plan.is_empty() {
-        println!("The manifest declares no files or shell integration.");
-        return Ok(());
+    if execute_plan(&plan, &manifest, yes)? {
+        register_manifest(&args.manifest, &args.profiles);
     }
-    apply_env_defaults(&manifest);
-    let mut executor = Executor::new(SwissCache::load().unwrap_or_default());
-    executor.execute(&plan, None)?;
-    println!("Done: {} file step(s) applied.", plan.steps.len());
     Ok(())
 }
 
-fn shell_only_plan(manifest: &LoadedManifest, shell: &str) -> CommandResult<Plan> {
-    let kind =
-        ShellKind::from_name(shell).ok_or_else(|| anyhow::anyhow!("Unknown shell '{}'", shell))?;
-    let single = config_for_single_shell(manifest, kind)?;
-    let context = plan_context(manifest);
-    Ok(Plan {
-        steps: shellgen::shell_steps(&single.config, &context)?,
-    })
+#[allow(clippy::too_many_arguments)]
+fn command_setup(
+    args: &ManifestArgs,
+    template: Option<&str>,
+    shell: Option<&str>,
+    yes: bool,
+    dry_run: bool,
+    force_files: bool,
+) -> CommandResult<()> {
+    materialize_template(&args.manifest, template)?;
+
+    let manifest = load_manifest(&args.manifest, &args.profiles)?;
+    let context = plan_context(&manifest);
+    let mut plan = build_plan(&manifest, &context)?;
+    if force_files {
+        plan = plan.force_file_overwrites();
+    }
+
+    // Full integration: make sure the running/requested shell sources the
+    // Swiss init even when the manifest does not configure it explicitly.
+    let registration = shell_registration_steps(&manifest, &context, shell)?;
+    plan.steps.extend(registration);
+
+    if dry_run {
+        println!("{}", plan.render());
+        return Ok(());
+    }
+
+    if plan.requires_admin() && !executor::is_admin()? {
+        bail!(
+            "This plan contains steps that require administrator rights. \
+             Re-run as administrator, or use `swiss apply` to proceed anyway."
+        );
+    }
+
+    if execute_plan(&plan, &manifest, yes)? {
+        register_manifest(&args.manifest, &args.profiles);
+    }
+    Ok(())
 }
 
-fn config_for_single_shell(
-    manifest: &LoadedManifest,
-    kind: ShellKind,
-) -> CommandResult<LoadedManifest> {
-    let mut single = manifest.clone();
-    let Some(target) = single.config.shells.get(kind.name()).cloned() else {
-        bail!("Shell '{}' is not configured in the manifest", kind.name());
+/// Writes the manifest from a built-in template when it does not exist yet.
+fn materialize_template(path: &Path, template: Option<&str>) -> CommandResult<()> {
+    let Some(template) = template else {
+        if !path.exists() {
+            bail!(
+                "Manifest {} does not exist. Create it, or generate one with \
+                 `swiss setup --manifest {} --template <workstation|service-host|dev-shell>`",
+                path.display(),
+                path.display()
+            );
+        }
+        return Ok(());
     };
-    single.config.shells.clear();
-    single.config.shells.insert(kind.name().to_owned(), target);
-    Ok(single)
-}
 
-fn command_shell(command: &ShellCommand) -> CommandResult<()> {
-    match command {
-        ShellCommand::Plan { manifest, shell } => {
-            let manifest = load_manifest(manifest)?;
-            let plan = shell_only_plan(&manifest, shell)?;
-            println!("{}", plan.render());
-            Ok(())
-        }
-        ShellCommand::Apply { manifest, shell } => {
-            let manifest = load_manifest(manifest)?;
-            let plan = shell_only_plan(&manifest, shell)?;
-            if plan.is_empty() {
-                println!("Nothing to do for shell '{}'.", shell);
-                return Ok(());
-            }
-            let mut executor = Executor::new(SwissCache::load().unwrap_or_default());
-            executor.execute(&plan, None)?;
-            println!("Shell integration applied for '{}'.", shell);
-            Ok(())
-        }
-        ShellCommand::Print { manifest, shell } => {
-            let manifest = load_manifest(manifest)?;
-            let kind = ShellKind::from_name(shell)
-                .ok_or_else(|| anyhow::anyhow!("Unknown shell '{}'", shell))?;
-            print!("{}", shellgen::render_print(&manifest.config, kind)?);
-            Ok(())
+    if path.exists() {
+        log::info!(
+            "Manifest {} already exists; ignoring --template",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let content = match template {
+        "workstation" => embedded::WORKSTATION_YAML,
+        "service-host" => embedded::SERVICE_HOST_YAML,
+        "dev-shell" => embedded::DEV_SHELL_YAML,
+        other => bail!(
+            "Unknown template '{}'. Available: workstation, service-host, dev-shell",
+            other
+        ),
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
         }
     }
+    std::fs::write(path, content)?;
+    println!("Wrote {} template to {}", template, path.display());
+    Ok(())
+}
+
+/// Detects the shell to register from $SHELL (zsh/bash); nushell when the
+/// manifest manages it.
+fn detect_shell(manifest: &LoadedManifest) -> Option<ShellKind> {
+    if let Ok(shell_path) = std::env::var("SHELL") {
+        if let Some(name) = Path::new(&shell_path).file_name().and_then(|n| n.to_str()) {
+            if let Some(kind) = ShellKind::from_name(name) {
+                return Some(kind);
+            }
+        }
+    }
+    if manifest.config.nushell.is_some() {
+        return Some(ShellKind::Nushell);
+    }
+    None
+}
+
+/// Extra steps for `setup`: register the init hook for the running/requested
+/// shell when the manifest's `shells` section does not already cover it.
+fn shell_registration_steps(
+    manifest: &LoadedManifest,
+    context: &PlanContext,
+    shell: Option<&str>,
+) -> CommandResult<Vec<Step>> {
+    let kind = match shell {
+        Some(name) => Some(
+            ShellKind::from_name(name)
+                .ok_or_else(|| anyhow::anyhow!("Unknown shell '{}'", name))?,
+        ),
+        None => detect_shell(manifest),
+    };
+    let Some(kind) = kind else {
+        log::debug!("No shell detected for registration; skipping");
+        return Ok(Vec::new());
+    };
+
+    // If the manifest mentions the shell at all (even disabled), the manifest
+    // is the source of truth and setup does not override it.
+    if manifest.config.shells.contains_key(kind.name()) {
+        return Ok(Vec::new());
+    }
+
+    log::info!(
+        "Registering Swiss init for '{}' (not covered by the manifest)",
+        kind.name()
+    );
+
+    if kind == ShellKind::Nushell {
+        // Minimal managed loader so `swiss init` works at startup.
+        let target = crate::parser::ShellTargetConfig::default();
+        return shellgen::managed_loader_steps_for(&manifest.config, &target, context);
+    }
+
+    let init_file = kind.init_file_name().expect("non-nushell init file");
+    let target_file = kind
+        .default_target()
+        .expect("non-nushell shells have a default target")
+        .to_owned();
+    Ok(vec![
+        Step::WriteFile {
+            path: context.home.join(".config/swiss").join(init_file),
+            content: shellgen::init_file_content(&manifest.config, kind, &[])?.into_bytes(),
+            overwrite: false,
+            append_if_missing: false,
+            backup: false,
+        },
+        Step::PatchBlock {
+            target: target_file,
+            block: shellgen::REGISTRATION_BLOCK.to_owned(),
+            content: kind
+                .registration_line()
+                .expect("non-nushell registration line"),
+        },
+    ])
+}
+
+fn command_update(
+    manifest_override: Option<&Path>,
+    profiles_override: &[String],
+    yes: bool,
+    dry_run: bool,
+) -> CommandResult<()> {
+    let cache = SwissCache::load().unwrap_or_default();
+
+    let (path, profiles): (PathBuf, Vec<String>) = match manifest_override {
+        Some(path) => (path.to_path_buf(), profiles_override.to_vec()),
+        None => {
+            let path = cache.get(MANIFEST_PATH_KEY).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No manifest registered yet. Run `swiss setup --manifest <path>` first, \
+                     or pass --manifest explicitly."
+                )
+            })?;
+            let profiles = if profiles_override.is_empty() {
+                cache
+                    .get(MANIFEST_PROFILES_KEY)
+                    .map(|raw| {
+                        raw.split('\n')
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                profiles_override.to_vec()
+            };
+            (PathBuf::from(path), profiles)
+        }
+    };
+
+    println!(
+        "Updating from {}{}",
+        path.display(),
+        if profiles.is_empty() {
+            String::new()
+        } else {
+            format!(" (profiles: {})", profiles.join(", "))
+        }
+    );
+
+    let args = ManifestArgs {
+        manifest: path,
+        profiles,
+    };
+    command_apply(&args, yes, dry_run, false)
 }
 
 fn command_status() -> CommandResult<()> {
     let cache = SwissCache::load().unwrap_or_default();
     println!("swiss {}", VERSION);
+    match cache.get(MANIFEST_PATH_KEY) {
+        Some(path) => println!("registered manifest: {}", path),
+        None => println!("registered manifest: none (run `swiss setup`)"),
+    }
+    if let Some(profiles) = cache.get(MANIFEST_PROFILES_KEY) {
+        if !profiles.is_empty() {
+            println!("registered profiles: {}", profiles.replace('\n', ", "));
+        }
+    }
     match cache.get(FINGERPRINT_KEY) {
-        Some(fingerprint) => println!("last applied manifest: {}", fingerprint),
-        None => println!("last applied manifest: none"),
+        Some(fingerprint) => println!("last applied fingerprint: {}", fingerprint),
+        None => println!("last applied fingerprint: none"),
     }
 
     let mut deps: Vec<_> = cache.deps().values().collect();
@@ -250,37 +440,33 @@ fn command_status() -> CommandResult<()> {
     Ok(())
 }
 
-fn tool_available(program: &str, args: &[&str]) -> bool {
-    std::process::Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn command_doctor() -> CommandResult<()> {
-    let mut checks: Vec<(&str, bool)> = vec![
-        ("nu", tool_available("nu", &["--version"])),
-        ("cargo", tool_available("cargo", &["--version"])),
-        ("rustup", tool_available("rustup", &["--version"])),
-        ("git", tool_available("git", &["--version"])),
-    ];
-    match Os::current() {
-        Os::Linux => checks.push(("apt-get", tool_available("apt-get", &["--version"]))),
-        Os::Macos => checks.push(("brew", tool_available("brew", &["--version"]))),
-        Os::Windows => checks.push(("scoop", tool_available("scoop", &["--version"]))),
-    }
-
+fn command_doctor(manifest_path: Option<&Path>, profiles: &[String]) -> CommandResult<()> {
+    println!("# installation");
     let mut all_ok = true;
-    for (name, available) in checks {
+    for (name, available) in doctor::installation_checks(Os::current()) {
         println!("{:<10} {}", name, if available { "ok" } else { "MISSING" });
         all_ok &= available;
     }
-    if !all_ok {
-        bail!("Some required tools are missing");
+
+    if let Some(path) = manifest_path {
+        println!("\n# manifest {}", path.display());
+        let manifest = load_manifest(path, profiles)?;
+        let context = plan_context(&manifest);
+        let findings = doctor::validate_manifest(&manifest, &context);
+        if findings.is_empty() {
+            println!("manifest ok: no findings");
+        } else {
+            for finding in &findings {
+                println!("{}", finding);
+            }
+        }
+        all_ok &= !findings.iter().any(|finding| finding.is_error());
     }
+
+    if !all_ok {
+        bail!("Doctor found problems");
+    }
+    println!("\nAll good.");
     Ok(())
 }
 
@@ -293,67 +479,44 @@ fn command_clean_cache() -> CommandResult<()> {
     Ok(())
 }
 
-fn command_init_config(template: &str, output: &std::path::Path, force: bool) -> CommandResult<()> {
-    let content = match template {
-        "workstation" => embedded::WORKSTATION_YAML,
-        "service-host" => embedded::SERVICE_HOST_YAML,
-        "dev-shell" => embedded::DEV_SHELL_YAML,
-        other => bail!(
-            "Unknown template '{}'. Available: workstation, service-host, dev-shell",
-            other
-        ),
-    };
-
-    if output.exists() && !force {
-        bail!(
-            "Refusing to overwrite {}: pass --force to replace it",
-            output.display()
-        );
-    }
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    std::fs::write(output, content)?;
-    println!("Wrote {} template to {}", template, output.display());
-    if template == "workstation" {
-        println!(
-            "Note: this template references file templates relative to the manifest \
-             (see examples/templates in the Swiss repository)."
-        );
-    }
-    Ok(())
-}
-
 fn main() {
     let cli = cli::Cli::parse();
 
     logger::init(cli.verbose);
 
     let command_result = match &cli.command {
-        Command::Init {} => command_init(),
+        Command::Init { shell } => command_init(shell.as_deref()),
         Command::Plan { manifest } => command_plan(manifest),
         Command::Apply {
             manifest,
             yes,
             dry_run,
-        } => command_apply(manifest, *yes, *dry_run, false),
+            force_files,
+        } => command_apply(manifest, *yes, *dry_run, *force_files),
         Command::Setup {
             manifest,
+            template,
+            shell,
             yes,
             dry_run,
-        } => command_apply(manifest, *yes, *dry_run, true),
-        Command::Files { manifest, force } => command_files(manifest, *force),
-        Command::Shell { command } => command_shell(command),
+            force_files,
+        } => command_setup(
+            manifest,
+            template.as_deref(),
+            shell.as_deref(),
+            *yes,
+            *dry_run,
+            *force_files,
+        ),
+        Command::Update {
+            manifest,
+            profiles,
+            yes,
+            dry_run,
+        } => command_update(manifest.as_deref(), profiles, *yes, *dry_run),
         Command::Status {} => command_status(),
-        Command::Doctor {} => command_doctor(),
+        Command::Doctor { manifest, profiles } => command_doctor(manifest.as_deref(), profiles),
         Command::CleanCache {} => command_clean_cache(),
-        Command::InitConfig {
-            template,
-            output,
-            force,
-        } => command_init_config(template, output, *force),
     };
 
     if let Err(err) = command_result {

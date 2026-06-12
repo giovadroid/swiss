@@ -39,8 +39,15 @@ impl NuShell {
         Self::run(&args, None)
     }
 
+    /// Quiet probe: no live output echo, suitable for plan/doctor contexts.
     pub fn version() -> CommandResult<String> {
-        let version = Self::run(&["--version"], None)?.trim().to_owned();
+        let output = std::process::Command::new(BIN_NAME)
+            .arg("--version")
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!("nu --version failed");
+        }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         log::debug!("Nu version: {}", version);
         Ok(version)
     }
