@@ -320,6 +320,10 @@ pub struct FileSpec {
     pub append_if_missing: bool,
     #[serde(default)]
     pub backup: bool,
+    /// Write the file with elevated privileges (e.g. `sudo` on Unix). Use for
+    /// destinations outside the user's home such as `/etc`.
+    #[serde(default)]
+    pub admin: bool,
     /// Restrict to these OS names (`linux`, `macos`, `windows`). Empty = all.
     #[serde(default)]
     pub os: Vec<String>,

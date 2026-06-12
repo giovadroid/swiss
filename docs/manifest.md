@@ -165,10 +165,19 @@ files:
   - source: ./templates/nu/macos.nu
     dest: ~/.swiss/env/macos.nu
     os: [macos]                         # restrict to specific OSes
+  - source: ./templates/daemon.conf
+    dest: /etc/myservice/daemon.conf
+    admin: true                         # install with elevated privileges (sudo)
 ```
 
 Exactly one of `source` / `content` must be set. Template contents are resolved
 at plan time, so `swiss plan` shows real byte counts.
+
+`admin: true` writes the destination with elevated privileges — use it for
+paths outside the user's home such as `/etc`. On Unix, when the process is not
+already root, Swiss stages the content in a temp file and installs it through
+`sudo` (honouring `overwrite`, `append_if_missing` and `backup`); the plan
+marks these steps with `[admin]`.
 
 ### `env`
 

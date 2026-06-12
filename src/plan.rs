@@ -55,6 +55,7 @@ pub enum Step {
         overwrite: bool,
         append_if_missing: bool,
         backup: bool,
+        requires_admin: bool,
     },
     GitSync {
         repo: String,
@@ -87,6 +88,7 @@ impl Step {
         match self {
             Step::Command { requires_admin, .. } => *requires_admin,
             Step::ShellCommand { requires_admin, .. } => *requires_admin,
+            Step::WriteFile { requires_admin, .. } => *requires_admin,
             Step::LinkNuBinaries => cfg!(not(target_os = "windows")),
             _ => false,
         }
@@ -132,6 +134,7 @@ impl fmt::Display for Step {
                 content,
                 overwrite,
                 append_if_missing,
+                requires_admin,
                 ..
             } => {
                 let mode = if *append_if_missing {
@@ -147,7 +150,11 @@ impl fmt::Display for Step {
                     path.display(),
                     mode,
                     content.len()
-                )
+                )?;
+                if *requires_admin {
+                    write!(formatter, " [admin]")?;
+                }
+                Ok(())
             }
             Step::GitSync { repo, dest, .. } => {
                 write!(formatter, "git sync: {} -> {}", repo, dest.display())
@@ -207,6 +214,7 @@ impl Plan {
                     content,
                     append_if_missing,
                     backup,
+                    requires_admin,
                     ..
                 } => Step::WriteFile {
                     path,
@@ -214,6 +222,7 @@ impl Plan {
                     overwrite: true,
                     append_if_missing,
                     backup,
+                    requires_admin,
                 },
                 other => other,
             })
@@ -545,6 +554,7 @@ fn file_steps(config: &SwissConfig, context: &PlanContext) -> Result<Vec<Step>> 
             overwrite: spec.overwrite,
             append_if_missing: spec.append_if_missing,
             backup: spec.backup,
+            requires_admin: spec.admin,
         });
     }
 
@@ -957,6 +967,28 @@ mod tests {
     }
 
     #[test]
+    fn file_admin_flag_marks_step_as_requiring_admin() {
+        let yaml = indoc! {r#"
+            files:
+              - content: "max connections 100\n"
+                dest: /etc/myservice/daemon.conf
+                admin: true
+        "#};
+        let manifest = manifest_from(yaml, Path::new("/manifests"));
+        let context = test_context(Os::Linux);
+
+        let plan = build_plan(&manifest, &context).unwrap();
+        let write = plan
+            .steps
+            .iter()
+            .find(|step| matches!(step, Step::WriteFile { .. }))
+            .expect("file step present");
+        assert!(write.requires_admin());
+        assert!(plan.requires_admin());
+        assert!(write.to_string().ends_with("[admin]"));
+    }
+
+    #[test]
     fn missing_required_env_fails_plan() {
         let yaml = indoc! {"
             env:
@@ -987,6 +1019,7 @@ mod tests {
                     overwrite: false,
                     append_if_missing: false,
                     backup: false,
+                    requires_admin: false,
                 },
             ],
         };

@@ -50,7 +50,15 @@ impl Executor {
                 overwrite,
                 append_if_missing,
                 backup,
-            } => write_file(path, content, *overwrite, *append_if_missing, *backup),
+                requires_admin,
+            } => write_file(
+                path,
+                content,
+                *overwrite,
+                *append_if_missing,
+                *backup,
+                *requires_admin,
+            ),
             Step::GitSync {
                 repo,
                 branch,
@@ -119,7 +127,15 @@ pub fn write_file(
     overwrite: bool,
     append_if_missing: bool,
     backup: bool,
+    requires_admin: bool,
 ) -> Result<()> {
+    #[cfg(not(target_os = "windows"))]
+    if requires_admin && !is_admin().unwrap_or(false) {
+        return write_file_elevated(path, content, overwrite, append_if_missing, backup);
+    }
+    #[cfg(target_os = "windows")]
+    let _ = requires_admin;
+
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
@@ -165,6 +181,131 @@ pub fn write_file(
     log::debug!("Writing file: {}", path.display());
     std::fs::write(path, content)?;
     Ok(())
+}
+
+/// Write a file at a privileged destination (e.g. `/etc`) by staging the
+/// content in a user-writable temp file and installing it through `sudo`.
+#[cfg(not(target_os = "windows"))]
+fn write_file_elevated(
+    path: &Path,
+    content: &[u8],
+    overwrite: bool,
+    append_if_missing: bool,
+    backup: bool,
+) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF-8 destination path: {}", path.display()))?;
+
+    if let Some(parent) = path.parent() {
+        if let Some(parent) = parent.to_str() {
+            sudo(&["mkdir", "-p", parent])?;
+        }
+    }
+
+    if append_if_missing {
+        let existing = sudo_read(path_str)?.unwrap_or_default();
+        if contains_slice(&existing, content) {
+            log::debug!("Skipping append, content present: {}", path.display());
+            return Ok(());
+        }
+        let mut merged = existing;
+        if !merged.is_empty() && merged.last() != Some(&b'\n') {
+            merged.push(b'\n');
+        }
+        merged.extend_from_slice(content);
+        return sudo_install(&merged, path_str);
+    }
+
+    let exists = sudo_test(&["-e", path_str])? || sudo_test(&["-L", path_str])?;
+    if exists {
+        if !overwrite {
+            log::debug!("Skipping existing file: {}", path.display());
+            return Ok(());
+        }
+        if backup {
+            sudo(&["cp", "-p", path_str, &format!("{}.bak", path_str)])
+                .with_context(|| format!("Failed to back up {}", path.display()))?;
+        }
+        sudo(&["rm", "-f", path_str])?;
+    }
+
+    log::debug!("Writing file (elevated): {}", path.display());
+    sudo_install(content, path_str)
+}
+
+/// Stage `content` to a temp file and `sudo cp` it onto `dest`.
+#[cfg(not(target_os = "windows"))]
+fn sudo_install(content: &[u8], dest: &str) -> Result<()> {
+    let staged = stage_temp(content)?;
+    let result = staged
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF-8 temp path"))
+        .and_then(|src| sudo(&["cp", src, dest]));
+    let _ = std::fs::remove_file(&staged);
+    result
+}
+
+/// Write `content` to a uniquely named file under the system temp directory.
+#[cfg(not(target_os = "windows"))]
+fn stage_temp(content: &[u8]) -> Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let mut staged = std::env::temp_dir();
+    staged.push(format!("swiss-stage-{}-{}", std::process::id(), nanos));
+    std::fs::write(&staged, content)
+        .with_context(|| format!("Failed to stage temp file {}", staged.display()))?;
+    Ok(staged)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sudo(args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new("sudo")
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to run: sudo {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("Command failed: sudo {}", args.join(" "));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sudo_test(args: &[&str]) -> Result<bool> {
+    let status = std::process::Command::new("sudo")
+        .arg("test")
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to run: sudo test {}", args.join(" ")))?;
+    Ok(status.success())
+}
+
+/// Read a privileged file's bytes via `sudo cat`, or `None` if it is absent.
+#[cfg(not(target_os = "windows"))]
+fn sudo_read(path: &str) -> Result<Option<Vec<u8>>> {
+    if !sudo_test(&["-e", path])? {
+        return Ok(None);
+    }
+    let output = std::process::Command::new("sudo")
+        .args(["cat", path])
+        .output()
+        .with_context(|| format!("Failed to read {} as root", path))?;
+    if !output.status.success() {
+        bail!("Failed to read {} as root", path);
+    }
+    Ok(Some(output.stdout))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn contains_slice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn git_sync(git: &GitConfig, dest: &Path) -> Result<()> {
@@ -293,14 +434,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        write_file(&path, b"first", false, false, false).unwrap();
+        write_file(&path, b"first", false, false, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
         // Existing file is preserved without overwrite.
-        write_file(&path, b"second", false, false, false).unwrap();
+        write_file(&path, b"second", false, false, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
-        write_file(&path, b"second", true, false, false).unwrap();
+        write_file(&path, b"second", true, false, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
     }
 
@@ -309,11 +450,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("env.nu");
 
-        write_file(&path, b"source swiss\n", false, true, false).unwrap();
-        write_file(&path, b"source swiss\n", false, true, false).unwrap();
+        write_file(&path, b"source swiss\n", false, true, false, false).unwrap();
+        write_file(&path, b"source swiss\n", false, true, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "source swiss\n");
 
-        write_file(&path, b"other line\n", false, true, false).unwrap();
+        write_file(&path, b"other line\n", false, true, false, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "source swiss\nother line\n"
@@ -325,8 +466,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
 
-        write_file(&path, b"original", false, false, false).unwrap();
-        write_file(&path, b"updated", true, false, true).unwrap();
+        write_file(&path, b"original", false, false, false, false).unwrap();
+        write_file(&path, b"updated", true, false, true, false).unwrap();
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated");
         assert_eq!(
@@ -340,7 +481,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("deep/nested/file.txt");
 
-        write_file(&path, b"data", false, false, false).unwrap();
+        write_file(&path, b"data", false, false, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "data");
     }
 }

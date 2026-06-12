@@ -360,6 +360,7 @@ fn snippet_steps(
             overwrite: true,
             append_if_missing: false,
             backup: false,
+            requires_admin: false,
         },
         Step::PatchBlock {
             target: target_file,
@@ -406,6 +407,7 @@ pub fn managed_loader_steps_for(
                 overwrite: true,
                 append_if_missing: false,
                 backup: false,
+                requires_admin: false,
             });
         }
     }
@@ -421,6 +423,7 @@ pub fn managed_loader_steps_for(
                 overwrite: true,
                 append_if_missing: false,
                 backup: false,
+                requires_admin: false,
             });
         }
     }
@@ -433,6 +436,7 @@ pub fn managed_loader_steps_for(
             overwrite: false,
             append_if_missing: false,
             backup: false,
+            requires_admin: false,
         });
     }
 
@@ -442,6 +446,7 @@ pub fn managed_loader_steps_for(
         overwrite: true,
         append_if_missing: false,
         backup: false,
+        requires_admin: false,
     });
     steps.push(Step::WriteFile {
         path: swiss_home.join("conf.nu"),
@@ -449,6 +454,7 @@ pub fn managed_loader_steps_for(
         overwrite: true,
         append_if_missing: false,
         backup: false,
+        requires_admin: false,
     });
 
     steps.push(Step::ConfigureNu);

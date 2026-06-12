@@ -340,6 +340,7 @@ fn shell_registration_steps(
             overwrite: false,
             append_if_missing: false,
             backup: false,
+            requires_admin: false,
         },
         Step::PatchBlock {
             target: target_file,
