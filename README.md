@@ -25,18 +25,24 @@ cargo install --path .
 
 ## Quick start
 
-Generate a starter manifest, review the plan, apply it:
+One command bootstraps a fresh machine: it materializes a starter manifest,
+applies it and hooks the Swiss init into your shell:
 
 ```bash
-swiss init-config --template dev-shell --output bootstrap.yaml
-swiss plan  --manifest bootstrap.yaml
-swiss apply --manifest bootstrap.yaml
+swiss setup --manifest bootstrap.yaml --template dev-shell
+```
+
+Review before touching anything, and keep everything fresh later:
+
+```bash
+swiss plan   --manifest bootstrap.yaml   # read-only
+swiss doctor --manifest bootstrap.yaml   # validate tools + manifest
+swiss update                             # re-apply the registered manifest
 ```
 
 Or start from one of the [examples](docs/examples.md):
 
 ```bash
-swiss plan  --manifest examples/workstation.yaml
 swiss setup --manifest examples/workstation.yaml
 swiss apply --manifest examples/bootstrap.yaml --profile service-host --yes
 ```
@@ -48,16 +54,18 @@ applies anything implicitly.
 
 | Command | Description |
 |---------|-------------|
+| `swiss setup -m <path> [--template <name>] [--shell <name>] [-p <profile>...] [--yes]` | Full setup: apply the manifest, register it as active and hook the shell init (detected or `--shell`). `--template` writes a starter manifest (`workstation`, `service-host`, `dev-shell`) when the file does not exist |
+| `swiss apply -m <path> [-p <profile>...] [--yes] [--dry-run] [--force-files]` | Bootstrap only: execute the plan, no shell registration |
 | `swiss plan -m <path> [-p <profile>...]` | Show the execution plan without changing anything |
-| `swiss apply -m <path> [-p <profile>...] [--yes] [--dry-run]` | Execute the plan (asks for confirmation unless `--yes`) |
-| `swiss setup -m <path> ...` | Like `apply`, plus first-run checks (fails early if admin rights are needed) |
-| `swiss files -m <path> [--force]` | Apply only the file/directory/shell-patch steps, no installs |
-| `swiss shell plan\|apply\|print -m <path> --shell <name>` | Shell integration for one shell (`nushell`, `zsh`, `bash`, `pwsh`) |
-| `swiss status` | Cached dependency state and last applied manifest fingerprint |
-| `swiss doctor` | Check that nu/cargo/rustup/git and the OS package manager are available |
+| `swiss update [--yes]` | Re-apply the manifest registered by setup/apply to update everything bootstrapped |
+| `swiss init [--shell <name>]` | Shell startup hook: Nushell env (default) or the generated zsh/bash/pwsh init code |
+| `swiss doctor [-m <path>] [-p <profile>...]` | Diagnose the installation and, optionally, validate a manifest |
+| `swiss status` | Registered manifest, cached dependency state and fingerprint |
 | `swiss clean-cache` | Delete the cache so the next apply re-runs everything |
-| `swiss init-config --template <name> --output <path>` | Write a starter manifest (`workstation`, `service-host`, `dev-shell`) |
-| `swiss init` | Internal: prints the Swiss environment for the Nushell loader |
+
+`setup` vs `apply`: use `apply` to just bootstrap a host (CI, servers); use
+`setup` to leave a machine fully integrated (manifest registered for
+`swiss update`, shell init wired into your startup files).
 
 ## Manifest overview
 
@@ -125,11 +133,19 @@ Modes:
   files (`env.nu`, `conf.nu`, dynamic aggregation via `swiss init`), patching
   `$nu.env-path` / `$nu.config-path` once with stable source lines. User modules in
   `~/.swiss/env` and `~/.swiss/conf` are aggregated at shell startup.
-- `snippet` (zsh/bash): Swiss patches bounded blocks into `~/.zshrc` / `~/.bashrc`.
-- `profile` (PowerShell): same as snippet, against `$PROFILE`.
-- `print`: nothing is written; use `swiss shell print` and source it yourself.
+- `snippet` (zsh/bash): Swiss generates one init file
+  (`~/.config/swiss/init.zsh` / `init.bash`) holding all module blocks, and
+  patches a **single** bounded block into `~/.zshrc` / `~/.bashrc` that sources
+  it. Your rc file stays clean; modules change only the generated file.
+- `profile` (PowerShell): same as snippet, against `$PROFILE` with `init.ps1`.
+- `print`: nothing is written; run `swiss init --shell zsh` (or bash/pwsh) to
+  print the generated init code and source/eval it yourself.
 
 Service hosts can omit the `shells` section entirely: no shell files are touched.
+`swiss setup` additionally registers the init hook for your current shell
+(detected from `$SHELL`, override with `--shell`) when the manifest does not
+mention it; a manifest that declares a shell — even disabled — is always the
+source of truth.
 
 ## Notes
 
@@ -143,11 +159,12 @@ Service hosts can omit the `shells` section entirely: no shell files are touched
       requires_admin: true
   ```
 
-- `swiss plan` is read-only; `apply` prints the plan and asks for confirmation
-  (skip with `--yes`).
-- The cache (`~/.config/swiss/.cache`) records installed dependencies, aliases and
-  the manifest fingerprint; pinned cargo versions are skipped when already
-  installed. `swiss clean-cache` resets it.
+- `swiss plan` is read-only; `apply`/`setup` print the plan and ask for
+  confirmation (skip with `--yes`).
+- The cache (`~/.config/swiss/.cache`) records installed dependencies, aliases,
+  the manifest fingerprint and the registered manifest used by `swiss update`;
+  pinned cargo versions are skipped when already installed. `swiss clean-cache`
+  resets it.
 - Secrets are never stored in manifests: use the `env` section to require or
   default environment variables.
 

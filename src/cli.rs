@@ -26,8 +26,12 @@ pub struct ManifestArgs {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Print the Swiss environment for the Nushell loader (used at shell startup)
-    Init {},
+    /// Shell startup hook: prints the Swiss environment/init code for a shell
+    Init {
+        /// Shell to initialize: nushell (default), zsh, bash or pwsh
+        #[clap(short, long)]
+        shell: Option<String>,
+    },
 
     /// Show the execution plan for a manifest without changing anything
     Plan {
@@ -35,7 +39,7 @@ pub enum Command {
         manifest: ManifestArgs,
     },
 
-    /// Apply a manifest: install packages, tools, files and shell integration
+    /// Bootstrap only: execute the manifest plan (no shell registration)
     Apply {
         #[clap(flatten)]
         manifest: ManifestArgs,
@@ -47,13 +51,50 @@ pub enum Command {
         /// Print the plan instead of executing it
         #[clap(long)]
         dry_run: bool,
+
+        /// Rewrite generated/declared files even if they exist
+        #[clap(long)]
+        force_files: bool,
     },
 
-    /// Apply a manifest with first-run checks (admin requirements, doctor)
+    /// Full setup: apply the manifest, register it as active and hook the
+    /// shell init into your startup files
     Setup {
         #[clap(flatten)]
         manifest: ManifestArgs,
 
+        /// Create the manifest from this template if it does not exist
+        /// (workstation, service-host or dev-shell)
+        #[clap(short, long)]
+        template: Option<String>,
+
+        /// Shell to register the init hook in (default: autodetect)
+        #[clap(short, long)]
+        shell: Option<String>,
+
+        /// Do not ask for confirmation
+        #[clap(short, long)]
+        yes: bool,
+
+        /// Print the plan instead of executing it
+        #[clap(long)]
+        dry_run: bool,
+
+        /// Rewrite generated/declared files even if they exist
+        #[clap(long)]
+        force_files: bool,
+    },
+
+    /// Re-apply the registered manifest to update everything bootstrapped
+    Update {
+        /// Manifest to update from (default: the one registered by setup/apply)
+        #[clap(short, long)]
+        manifest: Option<PathBuf>,
+
+        /// Profile(s) to overlay (default: the ones registered by setup/apply)
+        #[clap(short, long = "profile")]
+        profiles: Vec<String>,
+
         /// Do not ask for confirmation
         #[clap(short, long)]
         yes: bool,
@@ -63,78 +104,22 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Create folders and files declared by the manifest (no installs)
-    Files {
-        #[clap(flatten)]
-        manifest: ManifestArgs,
-
-        /// Overwrite existing files
-        #[clap(short, long, default_value = "false")]
-        force: bool,
-    },
-
-    /// Shell integration: plan, apply or print generated shell code
-    Shell {
-        #[clap(subcommand)]
-        command: ShellCommand,
-    },
-
-    /// Show cached dependency state and the last applied manifest fingerprint
+    /// Show cached dependency state and the registered manifest
     Status {},
 
-    /// Check that the tools Swiss relies on are available
-    Doctor {},
+    /// Diagnose the installation and, optionally, a manifest
+    Doctor {
+        /// Manifest to validate (load, profiles, templates, plan)
+        #[clap(short, long)]
+        manifest: Option<PathBuf>,
+
+        /// Profile(s) to overlay during validation
+        #[clap(short, long = "profile")]
+        profiles: Vec<String>,
+    },
 
     /// Delete the Swiss cache so the next apply re-runs everything
     CleanCache {},
-
-    /// Write a starter manifest from a built-in template
-    InitConfig {
-        /// Template name: workstation, service-host or dev-shell
-        #[clap(short, long, default_value = "dev-shell")]
-        template: String,
-
-        /// Output path for the generated manifest
-        #[clap(short, long)]
-        output: PathBuf,
-
-        /// Overwrite the output file if it exists
-        #[clap(short, long, default_value = "false")]
-        force: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ShellCommand {
-    /// Show the shell integration steps for one shell
-    Plan {
-        #[clap(flatten)]
-        manifest: ManifestArgs,
-
-        /// Shell name: nushell, zsh, bash or pwsh
-        #[clap(short, long)]
-        shell: String,
-    },
-
-    /// Apply the shell integration steps for one shell
-    Apply {
-        #[clap(flatten)]
-        manifest: ManifestArgs,
-
-        /// Shell name: nushell, zsh, bash or pwsh
-        #[clap(short, long)]
-        shell: String,
-    },
-
-    /// Print the generated shell code to stdout
-    Print {
-        #[clap(flatten)]
-        manifest: ManifestArgs,
-
-        /// Shell name: nushell, zsh, bash or pwsh
-        #[clap(short, long)]
-        shell: String,
-    },
 }
 
 #[cfg(test)]
@@ -149,12 +134,16 @@ mod tests {
     }
 
     #[test]
-    fn setup_parses_manifest_and_profiles() {
+    fn setup_parses_template_shell_and_profiles() {
         let cli = Cli::try_parse_from([
             "swiss",
             "setup",
             "--manifest",
             "./bootstrap.yaml",
+            "--template",
+            "dev-shell",
+            "--shell",
+            "zsh",
             "--profile",
             "base",
             "--profile",
@@ -164,9 +153,17 @@ mod tests {
         .unwrap();
 
         match cli.command {
-            Command::Setup { manifest, yes, .. } => {
+            Command::Setup {
+                manifest,
+                template,
+                shell,
+                yes,
+                ..
+            } => {
                 assert_eq!(manifest.manifest, PathBuf::from("./bootstrap.yaml"));
                 assert_eq!(manifest.profiles, vec!["base", "devops"]);
+                assert_eq!(template.as_deref(), Some("dev-shell"));
+                assert_eq!(shell.as_deref(), Some("zsh"));
                 assert!(yes);
             }
             _ => panic!("expected setup command"),
@@ -174,36 +171,67 @@ mod tests {
     }
 
     #[test]
+    fn init_accepts_optional_shell() {
+        let cli = Cli::try_parse_from(["swiss", "init"]).unwrap();
+        match cli.command {
+            Command::Init { shell } => assert!(shell.is_none()),
+            _ => panic!("expected init"),
+        }
+
+        let cli = Cli::try_parse_from(["swiss", "init", "--shell", "zsh"]).unwrap();
+        match cli.command {
+            Command::Init { shell } => assert_eq!(shell.as_deref(), Some("zsh")),
+            _ => panic!("expected init"),
+        }
+    }
+
+    #[test]
+    fn update_works_without_manifest() {
+        let cli = Cli::try_parse_from(["swiss", "update", "--yes"]).unwrap();
+        match cli.command {
+            Command::Update { manifest, yes, .. } => {
+                assert!(manifest.is_none());
+                assert!(yes);
+            }
+            _ => panic!("expected update"),
+        }
+    }
+
+    #[test]
+    fn doctor_accepts_optional_manifest() {
+        assert!(Cli::try_parse_from(["swiss", "doctor"]).is_ok());
+        let cli =
+            Cli::try_parse_from(["swiss", "doctor", "-m", "x.yaml", "-p", "service-host"]).unwrap();
+        match cli.command {
+            Command::Doctor { manifest, profiles } => {
+                assert_eq!(manifest, Some(PathBuf::from("x.yaml")));
+                assert_eq!(profiles, vec!["service-host"]);
+            }
+            _ => panic!("expected doctor"),
+        }
+    }
+
+    #[test]
     fn plan_and_apply_parse() {
         assert!(Cli::try_parse_from(["swiss", "plan", "-m", "x.yaml"]).is_ok());
-        assert!(Cli::try_parse_from(["swiss", "apply", "-m", "x.yaml", "--dry-run"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "swiss",
+            "apply",
+            "-m",
+            "x.yaml",
+            "--dry-run",
+            "--force-files"
+        ])
+        .is_ok());
     }
 
     #[test]
-    fn shell_subcommands_parse() {
-        let cli =
-            Cli::try_parse_from(["swiss", "shell", "print", "-m", "x.yaml", "--shell", "zsh"])
-                .unwrap();
-        match cli.command {
-            Command::Shell {
-                command: ShellCommand::Print { shell, .. },
-            } => assert_eq!(shell, "zsh"),
-            _ => panic!("expected shell print"),
-        }
-    }
-
-    #[test]
-    fn init_config_defaults_to_dev_shell_template() {
-        let cli = Cli::try_parse_from(["swiss", "init-config", "--output", "boot.yaml"]).unwrap();
-        match cli.command {
-            Command::InitConfig { template, .. } => assert_eq!(template, "dev-shell"),
-            _ => panic!("expected init-config"),
-        }
-    }
-
-    #[test]
-    fn debug_only_commands_are_gone() {
-        assert!(Cli::try_parse_from(["swiss", "update"]).is_err());
+    fn removed_commands_are_gone() {
+        assert!(Cli::try_parse_from(["swiss", "files", "-m", "x.yaml"]).is_err());
+        assert!(Cli::try_parse_from(["swiss", "init-config", "-o", "x.yaml"]).is_err());
+        assert!(
+            Cli::try_parse_from(["swiss", "shell", "print", "-m", "x.yaml", "-s", "zsh"]).is_err()
+        );
         assert!(Cli::try_parse_from(["swiss", "test"]).is_err());
     }
 }

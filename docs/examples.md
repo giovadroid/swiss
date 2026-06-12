@@ -1,7 +1,7 @@
 # Swiss examples
 
 All examples live in [`examples/`](../examples) and are plain manifests — Swiss
-embeds them only for `swiss init-config`, never applies them implicitly.
+embeds them only for `swiss setup --template`, never applies them implicitly.
 
 ## `examples/workstation.yaml`
 
@@ -31,11 +31,11 @@ swiss apply --manifest examples/service-host.yaml --profile monitoring --yes
 ## `examples/dev-shell.yaml`
 
 Minimal developer shell: ripgrep/bat/zoxide/starship plus zsh (and optional
-bash) snippets. The default `swiss init-config` template.
+bash) snippets. A good starter template.
 
 ```bash
-swiss init-config --template dev-shell --output bootstrap.yaml
-swiss shell print --manifest bootstrap.yaml --shell zsh
+swiss setup --manifest bootstrap.yaml --template dev-shell
+swiss init --shell zsh    # print the generated zsh init code
 ```
 
 ## `examples/bootstrap.yaml` + `examples/base.yaml`

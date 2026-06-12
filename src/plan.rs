@@ -91,16 +91,6 @@ impl Step {
             _ => false,
         }
     }
-
-    pub fn is_file_step(&self) -> bool {
-        matches!(
-            self,
-            Step::EnsureDir { .. }
-                | Step::WriteFile { .. }
-                | Step::PatchBlock { .. }
-                | Step::ConfigureNu
-        )
-    }
 }
 
 impl fmt::Display for Step {
@@ -206,25 +196,22 @@ impl Plan {
         output
     }
 
-    /// The subset handled by `swiss files`: directories, files and startup
-    /// file patches, without package installs or commands.
-    pub fn file_steps(&self, force: bool) -> Plan {
+    /// `--force-files`: rewrite declared/generated files even if they exist.
+    pub fn force_file_overwrites(self) -> Plan {
         let steps = self
             .steps
-            .iter()
-            .filter(|step| step.is_file_step())
-            .cloned()
+            .into_iter()
             .map(|step| match step {
                 Step::WriteFile {
                     path,
                     content,
-                    overwrite,
                     append_if_missing,
                     backup,
+                    ..
                 } => Step::WriteFile {
                     path,
                     content,
-                    overwrite: overwrite || force,
+                    overwrite: true,
                     append_if_missing,
                     backup,
                 },
@@ -986,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn file_steps_filter_respects_force() {
+    fn force_file_overwrites_only_touches_write_steps() {
         let plan = Plan {
             steps: vec![
                 Step::Command {
@@ -1005,10 +992,11 @@ mod tests {
             ],
         };
 
-        let files = plan.file_steps(true);
-        assert_eq!(files.steps.len(), 1);
+        let forced = plan.force_file_overwrites();
+        assert_eq!(forced.steps.len(), 2);
+        assert!(matches!(forced.steps[0], Step::Command { .. }));
         assert!(matches!(
-            files.steps[0],
+            forced.steps[1],
             Step::WriteFile {
                 overwrite: true,
                 ..

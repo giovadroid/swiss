@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 
 pub const NUSHELL_DEP: &str = "nushell";
 pub const FINGERPRINT_KEY: &str = "sk_manifest_fingerprint";
+/// Path of the manifest registered by setup/apply; consumed by `swiss update`.
+pub const MANIFEST_PATH_KEY: &str = "sk_manifest_path";
+/// Newline-separated profiles registered together with the manifest path.
+pub const MANIFEST_PROFILES_KEY: &str = "sk_manifest_profiles";
 const CACHE_PATH: &str = ".config/swiss/.cache";
 pub(crate) const NU_ENV_LOADER: &str = "source ~/.config/swiss/env.nu;";
 pub(crate) const NU_CONF_LOADER: &str = "source ~/.config/swiss/conf.nu;";
