@@ -1,0 +1,13 @@
+# Shared base layer, meant to be included from other manifests.
+package_manager:
+  linux:
+    apt:
+      packages:
+        - git
+        - curl
+        - build-essential
+
+dependencies:
+  cargo:
+    cargo-binstall:
+    ripgrep:

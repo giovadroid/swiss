@@ -1,0 +1,39 @@
+# Headless service host bootstrap: system packages and a few CLI tools,
+# no shell integration at all.
+#
+#   swiss plan  --manifest examples/service-host.yaml
+#   swiss apply --manifest examples/service-host.yaml --yes
+#   swiss apply --manifest examples/service-host.yaml --profile monitoring
+
+package_manager:
+  linux:
+    apt:
+      update_index: true
+      packages:
+        - git
+        - curl
+        - ca-certificates
+        - docker.io
+        - docker-compose-v2
+
+dependencies:
+  cargo:
+    cargo-binstall:
+    ripgrep:
+    bottom:
+
+profiles:
+  monitoring:
+    package_manager:
+      linux:
+        apt:
+          packages:
+            - htop
+            - iotop
+            - sysstat
+  backup:
+    package_manager:
+      linux:
+        apt:
+          packages:
+            - restic

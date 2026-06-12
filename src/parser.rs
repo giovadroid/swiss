@@ -1,17 +1,65 @@
-use crate::{commands, commands::CommandResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SwissConfig {
-    pub dependencies: Dependencies,
-    pub rust: RustConfig,
-    pub nushell: NushellConfig,
+/// Operating systems supported by manifest gates. Variants other than the
+/// current platform are still constructed by cross-OS plan tests.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Linux,
+    Macos,
+    Windows,
 }
 
-impl From<&str> for SwissConfig {
-    fn from(s: &str) -> Self {
-        serde_yaml::from_str::<SwissConfig>(s).unwrap_or_default()
+impl Os {
+    pub fn current() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Os::Linux
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Os::Macos
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Os::Windows
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Os::Linux => "linux",
+            Os::Macos => "macos",
+            Os::Windows => "windows",
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwissConfig {
+    #[serde(default)]
+    pub dependencies: Dependencies,
+    #[serde(default)]
+    pub rust: RustConfig,
+    #[serde(default)]
+    pub nushell: Option<NushellConfig>,
+    #[serde(default)]
+    pub package_manager: PackageManagerConfig,
+    #[serde(default)]
+    pub env: BTreeMap<String, EnvRequirement>,
+    #[serde(default)]
+    pub files: Vec<FileSpec>,
+    #[serde(default)]
+    pub shells: BTreeMap<String, ShellTargetConfig>,
+    #[serde(default)]
+    pub shell_modules: BTreeMap<String, ShellModuleSpec>,
+}
+
+impl SwissConfig {
+    pub fn parse(raw: &str) -> Result<Self, anyhow::Error> {
+        serde_yaml::from_str::<SwissConfig>(raw)
+            .map_err(|error| anyhow::anyhow!("Invalid manifest YAML: {}", error))
     }
 }
 
@@ -22,7 +70,12 @@ pub struct NushellConfig {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RustConfig {
+    #[serde(default)]
     pub toolchain: String,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub installer: OsScripts,
 }
 
 pub type CargoDependenciesMap = BTreeMap<String, Option<CargoCustomConfig>>;
@@ -30,7 +83,9 @@ pub type CustomDependenciesMap = BTreeMap<String, CustomDependency>;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dependencies {
+    #[serde(default)]
     pub cargo: CargoDependenciesMap,
+    #[serde(default)]
     pub customs: CustomDependenciesMap,
 }
 
@@ -40,6 +95,52 @@ fn default_as_true() -> bool {
 
 pub fn default_is_asterisk() -> String {
     String::from("*")
+}
+
+/// A command entry: either a plain string (runs through Nushell) or a
+/// detailed form with explicit shell and admin requirement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CommandSpec {
+    Plain(String),
+    Detailed {
+        run: String,
+        #[serde(default)]
+        shell: Option<String>,
+        #[serde(default)]
+        requires_admin: bool,
+    },
+}
+
+pub const DEFAULT_COMMAND_SHELL: &str = "nu";
+
+impl CommandSpec {
+    pub fn run(&self) -> &str {
+        match self {
+            CommandSpec::Plain(run) => run,
+            CommandSpec::Detailed { run, .. } => run,
+        }
+    }
+
+    pub fn shell(&self) -> &str {
+        match self {
+            CommandSpec::Plain(_) => DEFAULT_COMMAND_SHELL,
+            CommandSpec::Detailed { shell, .. } => {
+                shell.as_deref().unwrap_or(DEFAULT_COMMAND_SHELL)
+            }
+        }
+    }
+
+    pub fn requires_admin(&self) -> bool {
+        match self {
+            CommandSpec::Plain(_) => false,
+            CommandSpec::Detailed { requires_admin, .. } => *requires_admin,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.run().trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +157,8 @@ pub struct CargoCustomConfig {
     pub alias: BTreeMap<String, String>,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<CommandSpec>,
 }
 
 impl Default for CargoCustomConfig {
@@ -67,6 +170,7 @@ impl Default for CargoCustomConfig {
             macos: default_as_true(),
             alias: BTreeMap::new(),
             args: Vec::new(),
+            commands: Vec::new(),
         }
     }
 }
@@ -77,135 +181,370 @@ impl CargoCustomConfig {
     }
 
     pub fn package_name(&self, crate_name: &str) -> String {
-        if self.version == "*" {
+        if self.is_generic_version() {
             crate_name.to_string()
         } else {
-            format!("{} {}", crate_name, self.version)
+            format!("{}@{}", crate_name, self.version)
         }
     }
 
-    pub fn install(&self, crate_name: &str) -> CommandResult<String> {
-        commands::Cargo::install(self.package_name(crate_name).as_str(), &self.args)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub fn is_installable(&self) -> bool {
-        self.linux
-    }
-
-    #[cfg(target_os = "windows")]
-    pub fn is_installable(&self) -> bool {
-        self.windows
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn is_installable(&self) -> bool {
-        self.macos
+    pub fn is_installable(&self, os: Os) -> bool {
+        match os {
+            Os::Linux => self.linux,
+            Os::Macos => self.macos,
+            Os::Windows => self.windows,
+        }
     }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomDependency {
-    pub update: Option<Vec<String>>,
-    pub install: Option<Vec<String>>,
-    pub uninstall: Option<Vec<String>>,
+    #[serde(default)]
+    pub update: Option<Vec<CommandSpec>>,
+    #[serde(default)]
+    pub install: Option<Vec<CommandSpec>>,
+    #[serde(default)]
+    pub uninstall: Option<Vec<CommandSpec>>,
+    #[serde(default)]
+    pub git: Option<GitConfig>,
+    #[serde(default)]
+    pub windows: Option<bool>,
+    #[serde(default)]
+    pub linux: Option<bool>,
+    #[serde(default)]
+    pub macos: Option<bool>,
+    #[serde(default, rename = "post-install")]
     pub post_install: Option<OsCommands>,
+    #[serde(default, rename = "pre-uninstall")]
     pub pre_uninstall: Option<OsCommands>,
+}
+
+impl CustomDependency {
+    pub fn is_installable(&self, os: Os) -> bool {
+        match os {
+            Os::Linux => self.linux.unwrap_or(true),
+            Os::Macos => self.macos.unwrap_or(true),
+            Os::Windows => self.windows.unwrap_or(true),
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GitConfig {
+    pub repo: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub depth: Option<u32>,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OsCommands {
-    pub windows: Option<Vec<String>>,
-    pub linux: Option<Vec<String>>,
-    pub macos: Option<Vec<String>>,
+    pub windows: Option<Vec<CommandSpec>>,
+    pub linux: Option<Vec<CommandSpec>>,
+    pub macos: Option<Vec<CommandSpec>>,
+}
+
+impl OsCommands {
+    /// macOS falls back to the linux commands when undefined, mirroring the
+    /// historical behavior of the embedded manifest.
+    pub fn for_os(&self, os: Os) -> Option<&Vec<CommandSpec>> {
+        match os {
+            Os::Linux => self.linux.as_ref(),
+            Os::Windows => self.windows.as_ref(),
+            Os::Macos => self.macos.as_ref().or(self.linux.as_ref()),
+        }
+    }
+}
+
+pub type OsScripts = OsCommands;
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PackageManagerConfig {
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub linux: Option<LinuxPackageManagerConfig>,
+    #[serde(default)]
+    pub windows: Option<WindowsPackageManagerConfig>,
+    #[serde(default)]
+    pub macos: Option<MacosPackageManagerConfig>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinuxPackageManagerConfig {
+    #[serde(default)]
+    pub apt: Option<PackageManagerBackendConfig>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowsPackageManagerConfig {
+    #[serde(default)]
+    pub scoop: Option<PackageManagerBackendConfig>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MacosPackageManagerConfig {
+    #[serde(default)]
+    pub brew: Option<PackageManagerBackendConfig>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PackageManagerBackendConfig {
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub install: Option<String>,
+    #[serde(default)]
+    pub remove: Option<String>,
+    /// Run the manager refresh (e.g. `apt-get update`) before installing.
+    #[serde(default)]
+    pub update_index: bool,
+}
+
+/// Environment requirements: references, never secret values.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvRequirement {
+    #[serde(default)]
+    pub from_env: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// A file declared by the manifest. Either `source` (relative to the
+/// manifest file) or inline `content` must be set.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileSpec {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    pub dest: String,
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub append_if_missing: bool,
+    #[serde(default)]
+    pub backup: bool,
+    /// Restrict to these OS names (`linux`, `macos`, `windows`). Empty = all.
+    #[serde(default)]
+    pub os: Vec<String>,
+}
+
+impl FileSpec {
+    pub fn applies_to(&self, os: Os) -> bool {
+        self.os.is_empty() || self.os.iter().any(|name| name == os.name())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShellMode {
+    ManagedLoader,
+    Snippet,
+    Profile,
+    Print,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellTargetConfig {
+    #[serde(default = "default_as_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: Option<ShellMode>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub modules: Vec<String>,
+    #[serde(default)]
+    pub env_modules: Vec<String>,
+    #[serde(default)]
+    pub conf_modules: Vec<String>,
+    #[serde(default)]
+    pub user_modules_dir: Option<String>,
+}
+
+impl Default for ShellTargetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: None,
+            target: None,
+            modules: Vec::new(),
+            env_modules: Vec::new(),
+            conf_modules: Vec::new(),
+            user_modules_dir: None,
+        }
+    }
+}
+
+/// Value of a shell module environment variable: plain string or path list
+/// operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EnvValue {
+    Plain(String),
+    PathOps {
+        #[serde(default)]
+        prepend: Vec<String>,
+        #[serde(default)]
+        append: Vec<String>,
+    },
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellModuleSpec {
+    #[serde(default)]
+    pub package: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, EnvValue>,
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
+    /// Shell name -> init line emitted verbatim for that shell.
+    #[serde(default)]
+    pub init: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
 
     #[test]
-    fn test_opposite() {
-        let mut config = SwissConfig::default();
+    fn parses_workstation_example_and_keeps_bootstrap_fields() {
+        let config = SwissConfig::parse(crate::embedded::WORKSTATION_YAML).unwrap();
 
-        config
+        let tealdeer = config
             .dependencies
             .cargo
-            .insert("name".to_string(), Some(CargoCustomConfig::default()));
+            .get("tealdeer")
+            .and_then(|config| config.as_ref())
+            .unwrap();
+        assert_eq!(tealdeer.commands[0].run(), "tldr --update");
+        assert_eq!(tealdeer.commands[0].shell(), DEFAULT_COMMAND_SHELL);
 
-        let value = serde_yaml::to_string(&config).unwrap();
+        let helix = config.dependencies.customs.get("helix").unwrap();
+        assert_eq!(
+            helix.git.as_ref().unwrap().repo,
+            "https://github.com/helix-editor/helix"
+        );
+        assert!(helix.post_install.as_ref().unwrap().linux.is_some());
 
-        log::debug!("{}", value);
+        assert_eq!(config.rust.components, vec!["rust-analyzer"]);
+        assert!(config.package_manager.linux.unwrap().apt.is_some());
+        assert!(config.shells.contains_key("nushell"));
+        assert!(!config.files.is_empty());
     }
 
     #[test]
-    fn test_parse_yaml() {
-        let data = raw_example();
+    fn parses_minimal_manifest_without_defaults() {
+        let config = SwissConfig::parse(indoc! {"
+            dependencies:
+              cargo:
+                ripgrep:
+        "})
+        .unwrap();
 
-        if let Err(err) = serde_yaml::from_str::<SwissConfig>(data) {
-            // log::debug!("error: {}", err);
-            panic!("{}", err);
+        assert!(config.nushell.is_none());
+        assert!(config.dependencies.cargo.contains_key("ripgrep"));
+        assert!(config.shells.is_empty());
+        assert!(config.files.is_empty());
+    }
+
+    #[test]
+    fn invalid_yaml_returns_useful_error() {
+        let error = SwissConfig::parse("dependencies: [not a map").unwrap_err();
+        assert!(error.to_string().contains("Invalid manifest YAML"));
+    }
+
+    #[test]
+    fn command_spec_supports_explicit_shell_and_admin() {
+        let config = SwissConfig::parse(indoc! {r#"
+            dependencies:
+              customs:
+                tool:
+                  install:
+                    - "plain command"
+                    - run: ./configure && make install
+                      shell: sh
+                      requires_admin: true
+        "#})
+        .unwrap();
+
+        let install = config
+            .dependencies
+            .customs
+            .get("tool")
+            .unwrap()
+            .install
+            .as_ref()
+            .unwrap();
+        assert_eq!(install[0].shell(), "nu");
+        assert!(!install[0].requires_admin());
+        assert_eq!(install[1].shell(), "sh");
+        assert!(install[1].requires_admin());
+        assert_eq!(install[1].run(), "./configure && make install");
+    }
+
+    #[test]
+    fn file_spec_os_gate_filters_other_systems() {
+        let spec = FileSpec {
+            dest: "~/.swiss/env/macos.nu".to_owned(),
+            os: vec!["macos".to_owned()],
+            ..FileSpec::default()
+        };
+        assert!(spec.applies_to(Os::Macos));
+        assert!(!spec.applies_to(Os::Linux));
+
+        let unrestricted = FileSpec {
+            dest: "~/.config/x".to_owned(),
+            ..FileSpec::default()
+        };
+        assert!(unrestricted.applies_to(Os::Windows));
+    }
+
+    #[test]
+    fn shell_sections_parse_roadmap_shapes() {
+        let config = SwissConfig::parse(indoc! {r#"
+            shells:
+              nushell:
+                enabled: true
+                mode: managed-loader
+                env_modules: [fnm, starship]
+                conf_modules: [zoxide]
+              zsh:
+                mode: snippet
+                target: ~/.zshrc
+                modules: [path, starship]
+              bash:
+                enabled: false
+            shell_modules:
+              path:
+                env:
+                  PATH:
+                    prepend: ["~/.cargo/bin", "~/.local/bin"]
+              starship:
+                package: starship
+                init:
+                  zsh: eval "$(starship init zsh)"
+        "#})
+        .unwrap();
+
+        let nushell = config.shells.get("nushell").unwrap();
+        assert_eq!(nushell.mode, Some(ShellMode::ManagedLoader));
+        assert_eq!(nushell.env_modules, vec!["fnm", "starship"]);
+        assert!(!config.shells.get("bash").unwrap().enabled);
+
+        let path = config.shell_modules.get("path").unwrap();
+        match path.env.get("PATH").unwrap() {
+            EnvValue::PathOps { prepend, .. } => {
+                assert_eq!(prepend, &vec!["~/.cargo/bin", "~/.local/bin"])
+            }
+            other => panic!("expected path ops, got {:?}", other),
         }
-    }
-
-    #[allow(unused)]
-    fn temp_example() -> &'static str {
-        let yaml = indoc::indoc! {r#"
-       dependencies:
-            cargo:
-                sample:
-                    windows: false
-                    version: "0.1.0"
-                    alias:
-                        "sample": "sample"
-                sample2:
-                    name: sample2
-                sample3:
-            customs:
-                helix:
-                    install: "git clone https://github.com/helix-editor/helix; cd helix; cargo install --path helix-term; hx --grammar fetch; hx --grammar build"
-                    update: "cd helix; git pull; cargo install --path helix-term; hx --grammar fetch; hx --grammar build"
-                    uninstall: "cd helix; cargo uninstall --path helix-term; cd ..; rm -rf helix"
-       rust:
-            toolchain: "nightly"
-       nushell:
-            version: "0.1.0"
-        "#};
-
-        yaml
-    }
-
-    fn raw_example() -> &'static str {
-        crate::embedded::CONF_YAML
-    }
-
-    #[allow(unused)]
-    fn basic_yaml_example() -> &'static str {
-        r#"
-        dependencies:
-            cargo:
-        - bottom:
-            name: bottom
-            - zellij:
-            name: zellij
-        windows: no
-            - sample:
-            name: sample
-        windows: no
-        linux: yes
-        mac: yes
-        version: "0.1.0"
-        customs:
-        - helix:
-            name: helix
-        install: "git clone https://github.com/helix-editor/helix; cd helix; cargo install --path helix-term; hx --grammar fetch; hx --grammar build"
-        update: "cd helix; git pull; cargo install --path helix-term; hx --grammar fetch; hx --grammar build"
-        uninstall: "cd helix; cargo uninstall --path helix-term; cd ..; rm -rf helix"
-            - rust-analyzer:
-            name: rust-analyzer
-        install: "git clone https://github.com/rust-analyzer/rust-analyzer.git; cd rust-analyzer; cargo xtask install --server"
-        update: "cd rust-analyzer; git pull; cargo xtask install --server"
-        uninstall: "cd rust-analyzer; cargo xtask uninstall --server; cd ..; rm -rf rust-analyzer"
-         "#
     }
 }

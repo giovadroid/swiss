@@ -1,107 +1,160 @@
 # SWISS
 
-The best cross-platform shell and tools for daily usage. All built it in rust.
+A generic, file-driven bootstrapper for workstations and service hosts, built in Rust.
 
-Swiss aims to simplify operating system switching for console users. It uses nushell as the default terminal available
-on linux, windows and mac.
+Swiss installs packages, tools, repositories, files and shell integration from explicit
+YAML manifests. The binary ships only the engine: there is no embedded default
+environment. What gets installed and how your shells are configured is entirely
+defined by the manifest files you provide.
 
-It aims to offer a series of commands to facilitate the maintenance, or boostraping, of the computers we manage.
+Three separable layers:
 
-# Install
+1. **Bootstrap engine** — the `swiss` binary: plans and executes manifests.
+2. **Manifests** — declarative YAML files with includes, profiles and overlays
+   (see [docs/manifest.md](docs/manifest.md)).
+3. **Shell integration modules** — optional per-shell modules that generate or patch
+   startup files for Nushell, zsh, bash and PowerShell.
 
-To install just run in your terminal:
+## Install
 
-```
-git clone https://gitlab.com/jaesbit/swiss.git
+```bash
+git clone https://github.com/giovadroid/swiss.git
 cd swiss
 cargo install --path .
-swiss setup
 ```
 
-Then you need to wait until swiss prepare your system to work with the swiss default tools
+## Quick start
 
-# What comes by default
+Generate a starter manifest, review the plan, apply it:
 
-The commands are defined with the following format
+```bash
+swiss init-config --template dev-shell --output bootstrap.yaml
+swiss plan  --manifest bootstrap.yaml
+swiss apply --manifest bootstrap.yaml
+```
 
-* [$name ($command1, $command2, ...)]($url_to_documentation) $description
-* [$command]($url_to_documentation) $description
-* [$command ($alias1, $alias2, ...)]($url_to_documentation) $description
+Or start from one of the [examples](docs/examples.md):
 
-## Core tools
+```bash
+swiss plan  --manifest examples/workstation.yaml
+swiss setup --manifest examples/workstation.yaml
+swiss apply --manifest examples/bootstrap.yaml --profile service-host --yes
+```
 
-* [Nushell (nu)](https://www.nushell.sh/)
-* [helix (hx)](https://github.com/helix-editor/helix) shell editor like `vim` but more user friendly
-* [zoxide (cd, cdi, z, zi)](https://github.com/ajeetdsouza/zoxide) faster and intuitive `cd`
-* [find-files (ff)](https://crates.io/crates/find-files) faster alternative to `find`
-* [ripgrep (rg)](https://github.com/BurntSushi/ripgrep) `grep` alternative
-* [starship](https://github.com/starship/starship) cross shell prompt
+`swiss setup` and `swiss apply` always require an explicit `--manifest`; Swiss never
+applies anything implicitly.
 
-## Dev shell tools
+## Commands
 
-* [watchexec (wexec)](https://github.com/watchexec/watchexec) files watcher util when develop and perform any shell
-  command on changes
-* [hexyl (hx)](https://github.com/sharkdp/hexyl) command line hex viewer
-  * **TODO Installation is not implemented yet please doit manually**
-* [tokei](https://github.com/XAMPPRocky/tokei) Tokei is a program that displays statistics about your code.
-* [rust-analyzer](https://github.com/rust-analyzer/rust-analyzer)
-  * **TODO Installation is not implemented yet please doit manually**
-  * `rustup components add rust-analyzer`
+| Command | Description |
+|---------|-------------|
+| `swiss plan -m <path> [-p <profile>...]` | Show the execution plan without changing anything |
+| `swiss apply -m <path> [-p <profile>...] [--yes] [--dry-run]` | Execute the plan (asks for confirmation unless `--yes`) |
+| `swiss setup -m <path> ...` | Like `apply`, plus first-run checks (fails early if admin rights are needed) |
+| `swiss files -m <path> [--force]` | Apply only the file/directory/shell-patch steps, no installs |
+| `swiss shell plan\|apply\|print -m <path> --shell <name>` | Shell integration for one shell (`nushell`, `zsh`, `bash`, `pwsh`) |
+| `swiss status` | Cached dependency state and last applied manifest fingerprint |
+| `swiss doctor` | Check that nu/cargo/rustup/git and the OS package manager are available |
+| `swiss clean-cache` | Delete the cache so the next apply re-runs everything |
+| `swiss init-config --template <name> --output <path>` | Write a starter manifest (`workstation`, `service-host`, `dev-shell`) |
+| `swiss init` | Internal: prints the Swiss environment for the Nushell loader |
 
-## More cross platform tools
+## Manifest overview
 
-* [tealdeer (tldr)](https://github.com/dbrgn/tealdeer) fast implementation of tldr
-* [dua](https://github.com/Byron/dua-cli) Disk usage analyzer shell or interactive with `i` arg, you can also delete files and folders from interactive mode
-* [czkawka_cli](https://github.com/qarmin/czkawka) file and folder comparer and more
-* [grex](https://github.com/pemistahl/grex) command-line tool and library for generating regular expressions
-* [websocat](https://github.com/vi/websocat) Netcat, curl and socat for WebSockets.
-* [bat](https://github.com/sharkdp/bat) `cat` alternative with git integration
-* [procs](https://github.com/dalance/procs) `ps` altertanive cross platform
-* [sd](https://crates.io/crates/sd) is an intuitive find & replace CLI. alternative to `awk` and `sed`
-* [hyperfine](https://github.com/sharkdp/hyperfine) A command-line benchmarking tool.
-* [bottom (btm)](https://crates.io/crates/bottom) A customizable cross-platform graphical process/system monitor for the
-  terminal
-* [bandwich](https://github.com/imsnif/bandwhich) CLI utility for displaying current network utilization by process
-* [rmesg](https://github.com/polyverse/rmesg) A `dmesg` implementation in Rust
-* [git-delta](https://github.com/dandavison/delta) nice diff viewer integrated in git
-  * ** TODO: Pending to complete integration with git requires to do it manually**
-* [fnm](https://github.com/Schniz/fnm) Fast and simple Node.js version manager, built in RustFast node manager
-* [gitui](https://github.com/extrawurst/gitui) Blazing fast terminal-ui for git written in rust
+```yaml
+includes:                 # compose multiple files (relative to this one)
+  - ./base.yaml
 
-## Cargo extra tools
+nushell:                  # optional: manage the Nushell version
+  version: "0.101.0"
 
-All this commands are for cargo, you can use them with `cargo $command`. The `$command` is between parenthesis.
+package_manager:          # OS packages (apt / brew / scoop)
+  linux:
+    apt:
+      update_index: true
+      packages: [git, curl]
 
-* [watch (watch)](https://github.com/watchexec/cargo-watch)
-* [update (install-update)](https://github.com/nabijaczleweli/cargo-update)
-* [edit (add)](https://github.com/killercup/cargo--edit)
-* [cache (cache)](https://crates.io/crates/cargo-cache)
-* [deps (deps)](https://crates.io/crates/cargo-deps)
+dependencies:
+  cargo:                  # cargo packages, installed via cargo-binstall
+    ripgrep:
+    zoxide:
+      args: ["--locked"]
+      alias: {cdi: "__zoxide_zi"}
+  customs:                # git-sourced or scripted tools with install/update hooks
+    helix:
+      git: {repo: "https://github.com/helix-editor/helix", branch: master}
+      install: ["cargo install --path helix-term"]
 
-## Linux or Mac Os only tools
+files:                    # files/templates to write, with overwrite/append modes
+  - source: ./templates/starship.toml
+    dest: ~/.config/starship.toml
+    overwrite: false
 
-* [zellij (zj, zellij)](https://github.com/zellij-org/zellij) terminal multiplexer like `tmux` but more user friendly
-* [exa (exa, els)](https://github.com/ogham/exa) like `ls`
+shells:                   # optional shell integration, per shell
+  nushell: {mode: managed-loader}
+  zsh: {mode: snippet, target: ~/.zshrc, modules: [path, starship]}
 
-# Customization
+shell_modules:            # reusable named units shared by all shells
+  path:
+    env: {PATH: {prepend: ["~/.cargo/bin"]}}
+  starship:
+    init: {zsh: 'eval "$(starship init zsh)"'}
 
-when setup is completed you will have a `~/.swiss` folder with the following structure
+profiles:                 # named overlays selected with --profile
+  service-host:
+    package_manager:
+      linux: {apt: {packages: [docker.io]}}
+```
 
-* `~/.swiss` folder where you can add custom yaml files to be loaded on startup on `swiss init` call just
-  before `~/.swiss/env/*.nu`
-  * `env` folder where you can add your custom nu scripts that will be loaded on startup on `env` call
-  * `conf` folder where you can add your custom starship config that will be loaded on startup on `conf` call
+Full schema reference: [docs/manifest.md](docs/manifest.md).
 
-# Known issues
+## Shell integration
 
-* Windows `startship timing` and also new line loads will be increased in rust with high ms usage when are in rust
-  folder
+Shell integration is optional and module-driven. Generated content is always wrapped
+in bounded, idempotent blocks:
 
-# TODO Features
+```text
+# swiss begin: starship
+eval "$(starship init zsh)"
+# swiss end: starship
+```
 
-- [x] detect os and perform boostraping
-- [ ] Add custom yaml implementation
-- [ ] Document yaml format
-- [ ] add upgrade support
-- [ ] reduce installation by cache install compilations
-- [ ] add nerd fonts fira and hack
+Modes:
+
+- `managed-loader` (Nushell): Swiss owns `~/.config/swiss` and generates the loader
+  files (`env.nu`, `conf.nu`, dynamic aggregation via `swiss init`), patching
+  `$nu.env-path` / `$nu.config-path` once with stable source lines. User modules in
+  `~/.swiss/env` and `~/.swiss/conf` are aggregated at shell startup.
+- `snippet` (zsh/bash): Swiss patches bounded blocks into `~/.zshrc` / `~/.bashrc`.
+- `profile` (PowerShell): same as snippet, against `$PROFILE`.
+- `print`: nothing is written; use `swiss shell print` and source it yourself.
+
+Service hosts can omit the `shells` section entirely: no shell files are touched.
+
+## Notes
+
+- Plain string commands in manifests run through **Nushell** (`nu -c`). Use the
+  detailed form to pick another shell:
+
+  ```yaml
+  commands:
+    - run: ./configure && make install
+      shell: sh
+      requires_admin: true
+  ```
+
+- `swiss plan` is read-only; `apply` prints the plan and asks for confirmation
+  (skip with `--yes`).
+- The cache (`~/.config/swiss/.cache`) records installed dependencies, aliases and
+  the manifest fingerprint; pinned cargo versions are skipped when already
+  installed. `swiss clean-cache` resets it.
+- Secrets are never stored in manifests: use the `env` section to require or
+  default environment variables.
+
+## Development
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all --locked
+```

@@ -7,23 +7,23 @@ use std::thread::JoinHandle;
 
 pub type LoaderResult<T> = Result<T, anyhow::Error>;
 
-const CONF_FOLDER_NAME: &'static str = "conf";
-const ENV_FOLDER_NAME: &'static str = "env";
+const CONF_FOLDER_NAME: &str = "conf";
+const ENV_FOLDER_NAME: &str = "env";
 
-const DYNAMIC_ALIAS_FILE: &'static str = "aliases.dyn.nu";
+const DYNAMIC_ALIAS_FILE: &str = "aliases.dyn.nu";
 const DYNAMIC_CONF_FILE: &str = "conf.dyn.nu";
 const DYNAMIC_ENV_FILE: &str = "env.dyn.nu";
 
-const SWISS_HOME_SUB_PATH: &'static str = ".config/swiss";
-const SWISS_USER_HOME_SUB_PATH: &'static str = ".swiss";
+const SWISS_HOME_SUB_PATH: &str = ".config/swiss";
+const SWISS_USER_HOME_SUB_PATH: &str = ".swiss";
 
 const ENV_USER_FOLDER: &str = ".swiss/env";
 const CONF_USER_FOLDER: &str = ".swiss/conf";
 
-const NU_SCRIPT_EXTENSION: &'static str = "nu";
+const NU_SCRIPT_EXTENSION: &str = "nu";
 
-const DYNAMIC_FILE_PRE_HEADER: &'static str = "#StartFile: ";
-const DYNAMIC_FILE_PRE_FOOTER: &'static str = "#EndFile: ";
+const DYNAMIC_FILE_PRE_HEADER: &str = "#StartFile: ";
+const DYNAMIC_FILE_PRE_FOOTER: &str = "#EndFile: ";
 
 pub fn initialize_nu_files() -> LoaderResult<(PathBuf, PathBuf)> {
     let home_path = home::home_dir().expect("Failed to read home dir");
@@ -140,8 +140,8 @@ impl DynamicFolderLoader {
         buffer_file: &mut File,
         filter: &str,
     ) -> LoaderResult<()> {
-        for file in std::fs::read_dir(target_dir).expect("Failed to read dir") {
-            let target_file = file.expect("Failed to get file").path();
+        for file in std::fs::read_dir(target_dir)? {
+            let target_file = file?.path();
             if target_file
                 .extension()
                 .unwrap_or_default()

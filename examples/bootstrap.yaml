@@ -1,0 +1,38 @@
+# Composition example: a shared base plus per-role profiles.
+#
+#   swiss plan --manifest examples/bootstrap.yaml --profile workstation
+#   swiss plan --manifest examples/bootstrap.yaml --profile service-host
+
+includes:
+  - ./base.yaml
+
+profiles:
+  workstation:
+    dependencies:
+      cargo:
+        bat:
+        zoxide:
+        starship:
+    shells:
+      zsh:
+        enabled: true
+        mode: snippet
+        modules: [path, starship]
+    shell_modules:
+      path:
+        env:
+          PATH:
+            prepend: ["~/.cargo/bin"]
+      starship:
+        package: starship
+        init:
+          zsh: eval "$(starship init zsh)"
+
+  service-host:
+    package_manager:
+      linux:
+        apt:
+          update_index: true
+          packages:
+            - docker.io
+            - docker-compose-v2

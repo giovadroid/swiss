@@ -1,0 +1,198 @@
+# Full workstation bootstrap: Nushell-centric terminal stack.
+# This is the former embedded Swiss default environment, now an example.
+#
+#   swiss plan  --manifest examples/workstation.yaml
+#   swiss setup --manifest examples/workstation.yaml
+#
+# File templates are resolved relative to this manifest (./templates).
+
+nushell:
+  version: "0.101.0"
+
+rust:
+  toolchain: "nightly"
+  components:
+    - rust-analyzer
+  installer:
+    linux:
+      - 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
+    macos:
+      - 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
+
+package_manager:
+  linux:
+    apt:
+      packages:
+        - build-essential
+        - libssl-dev
+        - pkg-config
+        - docker.io
+        - net-tools
+        - libglibd-2.0-dev
+        - libx11-dev
+  windows:
+    scoop:
+      packages:
+        - libssl-dev
+  macos:
+    brew:
+      packages:
+        - cmake
+      install: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+dependencies:
+  cargo:
+    cargo-binstall:
+    cargo-watch:
+    cargo-update:
+    cargo-edit:
+    cargo-cache:
+    cargo-deps:
+    find-files:
+    ripgrep:
+    watchexec-cli:
+      alias:
+        wexec: "watchexec"
+    hexyl:
+    czkawka_cli:
+    dua-cli:
+    bottom:
+    zoxide:
+      args:
+        - "--locked"
+      alias:
+        cdi: "__zoxide_zi"
+        cd: "__zoxide_z"
+    bat:
+    procs:
+    sd:
+    tokei:
+    hyperfine:
+    tealdeer:
+      commands:
+        - "tldr --update"
+    bandwhich:
+    grex:
+    git-delta:
+      commands:
+        - "git config --global core.pager delta"
+        - "git config --global interactive.diffFilter \"delta --color-only --features=interactive\""
+    fnm:
+    websocat:
+    gitui:
+    zellij:
+      alias:
+        zj: "zellij"
+      windows: false
+    exa:
+      alias:
+        els: "exa --long --sort=size"
+      windows: false
+    rmesg:
+      windows: false
+    genact:
+  customs:
+    starship:
+      post-install:
+        linux:
+          - "curl -sS https://starship.rs/install.sh | sh"
+        macos:
+          - "curl -sS https://starship.rs/install.sh | sh"
+    helix:
+      git:
+        repo: "https://github.com/helix-editor/helix"
+        branch: "master"
+      install:
+        - "cargo install --path helix-term"
+        - "hx --grammar fetch"
+        - "hx --grammar build"
+      post-install:
+        linux: # if macos not defined consumes linux
+          - "ln -s (echo $env.PWD \"/runtime\" | str collect )  ~/.config/helix/runtime"
+        windows:
+          - "mklink /D \"%APPDATA%\\Helix\\runtime\" (echo $env.PWD \"\\runtime\" | str collect )"
+      uninstall:
+        - "cargo uninstall --path helix-term"
+    wezterm:
+      git:
+        repo: "https://github.com/wez/wezterm"
+        branch: "main"
+        depth: 1
+        recursive: true
+      install:
+        - "./get-deps"
+        - "cargo build --release"
+      post-install:
+        linux:
+          - "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| cp $it.name /usr/local/bin }"
+      pre-uninstall:
+        linux:
+          - "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| rm (echo /usr/local/bin/ $it.name | str collect) }"
+      windows: false
+      macos: false
+
+# Tool configuration written from templates next to this manifest.
+files:
+  - source: ./templates/starship.toml
+    dest: ~/.config/starship.toml
+    overwrite: false
+  - source: ./templates/helix.toml
+    dest: ~/.config/helix/helix.toml
+    overwrite: false
+  - source: ./templates/zellij.yaml
+    dest: ~/.config/zellij/config.yaml
+    overwrite: false
+  # Rich Nushell modules aggregated by the managed loader (`swiss init`).
+  - source: ./templates/nu/fnm.nu
+    dest: ~/.swiss/env/fnm.nu
+    overwrite: true
+  - source: ./templates/nu/starship.nu
+    dest: ~/.swiss/env/starship.nu
+    overwrite: true
+  - source: ./templates/nu/zoxide.nu
+    dest: ~/.swiss/conf/zoxide.nu
+    overwrite: true
+  - source: ./templates/nu/print.nu
+    dest: ~/.swiss/conf/print.nu
+    overwrite: true
+  - source: ./templates/nu/macos.nu
+    dest: ~/.swiss/env/macos.nu
+    overwrite: true
+    os: [macos]
+
+shells:
+  nushell:
+    enabled: true
+    mode: managed-loader
+    user_modules_dir: ~/.swiss
+    env_modules: []
+    conf_modules: []
+  # Optional: enable to get the same basics in zsh.
+  zsh:
+    enabled: false
+    mode: snippet
+    target: ~/.zshrc
+    modules:
+      - path
+      - starship
+      - zoxide
+
+shell_modules:
+  path:
+    env:
+      PATH:
+        prepend:
+          - ~/.cargo/bin
+          - ~/.local/bin
+  starship:
+    package: starship
+    init:
+      zsh: eval "$(starship init zsh)"
+      bash: eval "$(starship init bash)"
+      pwsh: Invoke-Expression (&starship init powershell)
+  zoxide:
+    package: zoxide
+    init:
+      zsh: eval "$(zoxide init zsh)"
+      bash: eval "$(zoxide init bash)"
+      pwsh: Invoke-Expression (& { (zoxide init powershell | Out-String) })

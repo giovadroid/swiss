@@ -1,11 +1,7 @@
-#![allow(dead_code)]
-
 use crate::commands;
-use crate::commands::cargo::Cargo;
 use crate::commands::CommandResult;
 use std::ffi::OsStr;
 use std::fmt::Debug;
-use std::path::Path;
 
 #[cfg(not(target_os = "windows"))]
 const BIN_NAME: &str = "nu";
@@ -49,28 +45,13 @@ impl NuShell {
         Ok(version)
     }
 
-    pub fn install(version: &str) -> CommandResult<()> {
-        if let Err(err) = Cargo::run(
-            [
-                "install",
-                format!("nu@{}", version).as_str(),
-                "--all-features",
-            ],
-            None,
-        ) {
-            log::error!("Error installing nu from cargo {}", err);
-            anyhow::bail!("Error installing nu from cargo {}", err);
-        };
-
-        Self::link()?;
-
-        Ok(())
-    }
-
+    /// Symlink nu binaries from `~/.cargo/bin` into `/usr/local/bin` so login
+    /// shells and `/etc/shells` entries can find them.
     pub fn link() -> CommandResult<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            // Symbolic links are only for linux and macos
+            use std::path::Path;
+
             let cargo_bins = Path::new(&home::home_dir().unwrap()).join(".cargo/bin");
             std::fs::read_dir(cargo_bins)?.for_each(|entry| {
                 let path = entry.unwrap().path();
@@ -90,23 +71,5 @@ impl NuShell {
             });
         }
         Ok(())
-    }
-
-    fn default_config() -> CommandResult<String> {
-        let config = NuShell::run(&["-c", "config env --default | save $nu.env-path"], None)?;
-        Ok(config)
-    }
-
-    fn default_env() -> CommandResult<String> {
-        let env = NuShell::run(&["-c", "config env --default | save $nu.env-path"], None)?;
-        Ok(env)
-    }
-}
-
-pub struct NuEnv {}
-
-impl NuEnv {
-    pub fn get_value(name: &str) -> CommandResult<String> {
-        NuShell::get_env_value(format!("$env.{}", name).as_str())
     }
 }

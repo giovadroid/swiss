@@ -1,8 +1,6 @@
-mod cargo;
 mod nu;
 
-pub use cargo::Cargo;
-pub use nu::{NuShell};
+pub use nu::NuShell;
 
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -33,7 +31,7 @@ where
     S: AsRef<OsStr>,
 {
     log::debug!("Running command: {} {:?}", bin_path, &args);
-    let mut command_builder = std::process::Command::new(&bin_path);
+    let mut command_builder = std::process::Command::new(bin_path);
     command_builder
         .args(args.clone())
         .stdout(Stdio::piped())
@@ -75,32 +73,4 @@ where
         anyhow::bail!("Error running command: {} {:?}", bin_path, &args);
     }
     Ok(stdout_lines.join("\r"))
-}
-
-#[allow(dead_code)]
-pub(crate) fn spawn_command<I, S>(bin_path: &str, args: I) -> CommandResult<std::process::Child>
-where
-    I: IntoIterator<Item = S> + Debug + Clone,
-    S: AsRef<OsStr>,
-{
-    log::debug!("Running command: {} {:?}", bin_path, &args);
-    let mut command: std::process::Child = std::process::Command::new(bin_path)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    log::debug!("Command spawned with pid: {}", command.id());
-
-    let reader = BufReader::new(command.stderr.take().unwrap());
-    let lines = reader.lines();
-    let mut stdout = std::io::stdout();
-    for line in lines {
-        // let content = line?.replace('\"', "");
-        print!("\r{}", fill(line?.replace('\"', "").trim()));
-        stdout.flush()?;
-    }
-    println!();
-
-    Ok(command)
 }
