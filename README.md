@@ -58,7 +58,7 @@ applies anything implicitly.
 | `swiss apply -m <path> [-p <profile>...] [--yes] [--dry-run] [--force-files]` | Bootstrap only: execute the plan, no shell registration |
 | `swiss plan -m <path> [-p <profile>...]` | Show the execution plan without changing anything |
 | `swiss update [--yes]` | Re-apply the manifest registered by setup/apply to update everything bootstrapped |
-| `swiss init [--shell <name>]` | Shell startup hook: Nushell env (default) or the generated zsh/bash/pwsh init code |
+| `swiss init [--shell <name>]` | Shell startup hook: renders the live init script for the shell (detected from `$SHELL`, or `--shell nushell\|zsh\|bash\|pwsh`) from the registered manifest and cached state |
 | `swiss doctor [-m <path>] [-p <profile>...]` | Diagnose the installation and, optionally, validate a manifest |
 | `swiss status` | Registered manifest, cached dependency state and fingerprint |
 | `swiss clean-cache` | Delete the cache so the next apply re-runs everything |
@@ -73,8 +73,8 @@ applies anything implicitly.
 includes:                 # compose multiple files (relative to this one)
   - ./base.yaml
 
-nushell:                  # optional: manage the Nushell version
-  version: "0.101.0"
+nushell:                  # optional: pin a version (omit for latest)
+  version: "0.101.0"       # nu is just another shell Swiss can install
 
 package_manager:          # OS packages (apt / brew / scoop)
   linux:
@@ -118,8 +118,14 @@ Full schema reference: [docs/manifest.md](docs/manifest.md).
 
 ## Shell integration
 
-Shell integration is optional and module-driven. Generated content is always wrapped
-in bounded, idempotent blocks:
+Shell integration is optional and module-driven. Swiss never writes generated
+init files during apply: it patches a **single** bounded block into your shell's
+startup file that calls `swiss init --shell <name>` at every startup. That
+command renders the init script live from the registered manifest plus the
+dynamic state (cached aliases, `SWISS_VERSION`), so editing modules takes effect
+on the next shell start with no re-apply. The block prepends `~/.cargo/bin` to
+`PATH` and is guarded with `command -v swiss`, so removing the binary never
+breaks your shell. The rendered script wraps each module in bounded blocks:
 
 ```text
 # swiss begin: starship
@@ -129,17 +135,21 @@ eval "$(starship init zsh)"
 
 Modes:
 
-- `managed-loader` (Nushell): Swiss owns `~/.config/swiss` and generates the loader
-  files (`env.nu`, `conf.nu`, dynamic aggregation via `swiss init`), patching
-  `$nu.env-path` / `$nu.config-path` once with stable source lines. User modules in
-  `~/.swiss/env` and `~/.swiss/conf` are aggregated at shell startup.
-- `snippet` (zsh/bash): Swiss generates one init file
-  (`~/.config/swiss/init.zsh` / `init.bash`) holding all module blocks, and
-  patches a **single** bounded block into `~/.zshrc` / `~/.bashrc` that sources
-  it. Your rc file stays clean; modules change only the generated file.
-- `profile` (PowerShell): same as snippet, against `$PROFILE` with `init.ps1`.
-- `print`: nothing is written; run `swiss init --shell zsh` (or bash/pwsh) to
-  print the generated init code and source/eval it yourself.
+- `managed-loader` (Nushell): nu can't `eval` a dynamic string, so Swiss patches
+  `$nu.env-path` to regenerate `~/.config/swiss/init.nu` from `swiss init` at
+  startup and `$nu.config-path` to source it. Drop extra `*.nu` files into
+  `~/.swiss/env` / `~/.swiss/conf` and they're appended to the script verbatim.
+- `snippet` (zsh/bash): patches `~/.zshrc` / `~/.bashrc` with
+  `eval "$(swiss init --shell <name>)"`.
+- `profile` (PowerShell): same idea against `$PROFILE`, piped into
+  `Invoke-Expression`.
+- `print`: nothing is patched; run `swiss init --shell zsh` (or bash/pwsh/nushell)
+  and source/eval the output yourself.
+
+Nushell is installed like any other tool (via `cargo binstall`) when a `nushell`
+section is present or `shells.nushell` is enabled; zsh/bash/pwsh are installed
+from the system package manager when missing. Swiss bootstraps Rust/cargo itself
+when a manifest needs it, so it runs on a host with nothing pre-installed.
 
 Service hosts can omit the `shells` section entirely: no shell files are touched.
 `swiss setup` additionally registers the init hook for your current shell
@@ -149,11 +159,14 @@ source of truth.
 
 ## Notes
 
-- Plain string commands in manifests run through **Nushell** (`nu -c`). Use the
-  detailed form to pick another shell:
+- Plain string commands in manifests run through the **portable system shell**
+  (`sh` on Unix, `powershell` on Windows) — not Nushell, which may not be
+  installed yet. Use the detailed form to pick a specific shell:
 
   ```yaml
   commands:
+    - run: ls | first              # needs shell: nu
+      shell: nu
     - run: ./configure && make install
       shell: sh
       requires_admin: true
@@ -161,6 +174,14 @@ source of truth.
 
 - `swiss plan` is read-only; `apply`/`setup` print the plan and ask for
   confirmation (skip with `--yes`).
+- **Output & logs**: `apply`/`setup` show a live progress view — a spinner per
+  step that resolves to `✓` or `✗` — and **do not stop at the first failure**:
+  every step runs, failures are tallied in a final summary, and the command
+  exits non-zero if any failed (so the rest of the plan still gets applied). A
+  failed install never records its tool as present, so re-running retries only
+  what's missing. Each run writes a full log (command output + diagnostics) to
+  `~/.config/swiss/logs/run-<id>.log` for later analysis. Pass `-v`/`--verbose`
+  to also stream command output and debug logs to the terminal as they happen.
 - The cache (`~/.config/swiss/.cache`) records installed dependencies, aliases,
   the manifest fingerprint and the registered manifest used by `swiss update`;
   pinned cargo versions are skipped when already installed. `swiss clean-cache`

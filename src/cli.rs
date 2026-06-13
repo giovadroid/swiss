@@ -26,9 +26,10 @@ pub struct ManifestArgs {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Shell startup hook: prints the Swiss environment/init code for a shell
+    /// Shell startup hook: prints the live init script for a shell
     Init {
-        /// Shell to initialize: nushell (default), zsh, bash or pwsh
+        /// Shell to initialize: nushell, zsh, bash or pwsh (default: detect
+        /// from $SHELL)
         #[clap(short, long)]
         shell: Option<String>,
     },

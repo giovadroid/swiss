@@ -61,11 +61,34 @@ impl SwissConfig {
         serde_yaml::from_str::<SwissConfig>(raw)
             .map_err(|error| anyhow::anyhow!("Invalid manifest YAML: {}", error))
     }
+
+    /// Whether this manifest wants Nushell on the host: an explicit `nushell`
+    /// section, or the nushell shell enabled in `shells`.
+    pub fn manages_nushell(&self) -> bool {
+        self.nushell.is_some()
+            || self
+                .shells
+                .get("nushell")
+                .map(|target| target.enabled && target.mode != Some(ShellMode::Print))
+                .unwrap_or(false)
+    }
+
+    /// Pinned Nushell version, when one is requested.
+    pub fn nushell_version(&self) -> Option<&str> {
+        self.nushell
+            .as_ref()
+            .and_then(|nushell| nushell.version.as_deref())
+    }
 }
 
+/// Optional Nushell management. Nushell is just another shell Swiss can
+/// install: enabling `shells.nushell` is enough to get the latest release;
+/// this section only exists to pin a version explicitly.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NushellConfig {
-    pub version: String,
+    /// Pin to this version; absent = latest.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,7 +135,13 @@ pub enum CommandSpec {
     },
 }
 
-pub const DEFAULT_COMMAND_SHELL: &str = "nu";
+/// Plain string commands run through the portable system shell, never through
+/// a shell Swiss may not have installed yet. Use the detailed form
+/// (`shell: nu`) for shell-specific syntax.
+#[cfg(not(target_os = "windows"))]
+pub const DEFAULT_COMMAND_SHELL: &str = "sh";
+#[cfg(target_os = "windows")]
+pub const DEFAULT_COMMAND_SHELL: &str = "powershell";
 
 impl CommandSpec {
     pub fn run(&self) -> &str {
@@ -354,12 +383,6 @@ pub struct ShellTargetConfig {
     pub target: Option<String>,
     #[serde(default)]
     pub modules: Vec<String>,
-    #[serde(default)]
-    pub env_modules: Vec<String>,
-    #[serde(default)]
-    pub conf_modules: Vec<String>,
-    #[serde(default)]
-    pub user_modules_dir: Option<String>,
 }
 
 impl Default for ShellTargetConfig {
@@ -369,9 +392,6 @@ impl Default for ShellTargetConfig {
             mode: None,
             target: None,
             modules: Vec::new(),
-            env_modules: Vec::new(),
-            conf_modules: Vec::new(),
-            user_modules_dir: None,
         }
     }
 }
@@ -477,7 +497,7 @@ mod tests {
             .install
             .as_ref()
             .unwrap();
-        assert_eq!(install[0].shell(), "nu");
+        assert_eq!(install[0].shell(), DEFAULT_COMMAND_SHELL);
         assert!(!install[0].requires_admin());
         assert_eq!(install[1].shell(), "sh");
         assert!(install[1].requires_admin());
@@ -508,8 +528,7 @@ mod tests {
               nushell:
                 enabled: true
                 mode: managed-loader
-                env_modules: [fnm, starship]
-                conf_modules: [zoxide]
+                modules: [fnm, starship, zoxide]
               zsh:
                 mode: snippet
                 target: ~/.zshrc
@@ -530,8 +549,9 @@ mod tests {
 
         let nushell = config.shells.get("nushell").unwrap();
         assert_eq!(nushell.mode, Some(ShellMode::ManagedLoader));
-        assert_eq!(nushell.env_modules, vec!["fnm", "starship"]);
+        assert_eq!(nushell.modules, vec!["fnm", "starship", "zoxide"]);
         assert!(!config.shells.get("bash").unwrap().enabled);
+        assert!(config.manages_nushell());
 
         let path = config.shell_modules.get("path").unwrap();
         match path.env.get("PATH").unwrap() {
@@ -540,5 +560,26 @@ mod tests {
             }
             other => panic!("expected path ops, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn nushell_section_version_is_optional() {
+        let pinned = SwissConfig::parse("nushell:\n  version: \"0.101.0\"").unwrap();
+        assert_eq!(pinned.nushell_version(), Some("0.101.0"));
+        assert!(pinned.manages_nushell());
+
+        let latest = SwissConfig::parse("nushell: {}").unwrap();
+        assert!(latest.nushell.is_some());
+        assert_eq!(latest.nushell_version(), None);
+        assert!(latest.manages_nushell());
+
+        let absent = SwissConfig::parse("dependencies:\n  cargo:\n    bat:\n").unwrap();
+        assert!(!absent.manages_nushell());
+
+        // A disabled or print-only nushell shell does not manage nu either.
+        let disabled = SwissConfig::parse("shells:\n  nushell:\n    enabled: false\n").unwrap();
+        assert!(!disabled.manages_nushell());
+        let print_only = SwissConfig::parse("shells:\n  nushell:\n    mode: print\n").unwrap();
+        assert!(!print_only.manages_nushell());
     }
 }

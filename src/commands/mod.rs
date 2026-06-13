@@ -2,25 +2,17 @@ mod nu;
 
 pub use nu::NuShell;
 
+use crate::report;
 use std::ffi::OsStr;
 use std::fmt::Debug;
-use std::io::{BufRead, BufReader, Write};
-use std::process::Stdio;
-use std::sync::atomic::AtomicUsize;
-
-static MAX_WIDTH: AtomicUsize = AtomicUsize::new(0);
-
-fn fill(value: &str) -> String {
-    let width = MAX_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
-    if width < value.len() {
-        MAX_WIDTH.store(value.len(), std::sync::atomic::Ordering::Relaxed);
-        return value.to_owned();
-    }
-    format!("{}{}", value, " ".repeat(width - value.len()))
-}
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 pub type CommandResult<T> = Result<T, anyhow::Error>;
 
+/// Runs a child process to completion, capturing both streams. Output goes to
+/// the run log (and to stderr only when verbose) instead of being streamed to
+/// the terminal, so the progress view stays clean. Returns captured stdout.
 pub(crate) fn run_command<I, S>(
     bin_path: &str,
     args: I,
@@ -30,47 +22,40 @@ where
     I: IntoIterator<Item = S> + Debug + Clone,
     S: AsRef<OsStr>,
 {
-    log::debug!("Running command: {} {:?}", bin_path, &args);
-    let mut command_builder = std::process::Command::new(bin_path);
-    command_builder
+    report::file_log(&format!("$ {} {:?}", bin_path, &args));
+
+    let mut builder = Command::new(bin_path);
+    builder
         .args(args.clone())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
     if let Some(working_dir) = working_dir {
-        command_builder.current_dir(working_dir);
+        builder.current_dir(working_dir);
     }
-    let mut command = command_builder.spawn()?;
+    let mut child = builder.spawn()?;
 
-    log::debug!("Command spawned with pid: {}", command.id());
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
 
-    let reader = BufReader::new(command.stderr.take().unwrap());
-    let mut stdout_lines: Vec<String> = Vec::new();
-    log::debug!("Reading stderr");
-    let mut stdout = std::io::stdout();
-    for line in reader.lines() {
-        let content = line?.replace('\"', "").trim().to_owned();
-        stdout_lines.push(content.clone());
-        print!("\r{}", fill(&content));
-        stdout.flush()?;
-    }
+    // Drain stdout on its own thread so a process that fills the stdout pipe
+    // while we're blocked reading stderr can never deadlock.
+    let stdout_reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            report::command_output("out", &line);
+            lines.push(line);
+        }
+        lines
+    });
 
-    let reader = BufReader::new(command.stdout.take().unwrap());
-    log::debug!("Reading stdout");
-
-    for line in reader.lines() {
-        let content = line?.replace('\"', "").trim().to_owned();
-        stdout_lines.push(content.clone());
-        print!("\r{}", fill(&content));
-        stdout.flush()?;
+    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        report::command_output("err", &line);
     }
 
-    print!("\r{}", fill(""));
-    print!("\r");
-    stdout.flush()?;
-
-    if !command.wait()?.success() {
-        anyhow::bail!("Error running command: {} {:?}", bin_path, &args);
+    let stdout_lines = stdout_reader.join().unwrap_or_default();
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("Command failed ({}): {} {:?}", status, bin_path, &args);
     }
-    Ok(stdout_lines.join("\r"))
+    Ok(stdout_lines.join("\n"))
 }

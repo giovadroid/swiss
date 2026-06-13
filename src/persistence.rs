@@ -11,8 +11,6 @@ pub const MANIFEST_PATH_KEY: &str = "sk_manifest_path";
 /// Newline-separated profiles registered together with the manifest path.
 pub const MANIFEST_PROFILES_KEY: &str = "sk_manifest_profiles";
 const CACHE_PATH: &str = ".config/swiss/.cache";
-pub(crate) const NU_ENV_LOADER: &str = "source ~/.config/swiss/env.nu;";
-pub(crate) const NU_CONF_LOADER: &str = "source ~/.config/swiss/conf.nu;";
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Default)]
 #[rkyv(derive(Debug))]

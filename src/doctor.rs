@@ -75,10 +75,10 @@ fn lint_config(config: &SwissConfig, os: Os) -> Vec<Finding> {
     let uses_nu_commands = all_commands(config)
         .iter()
         .any(|(_, command)| matches!(command.shell(), "nu" | "nushell"));
-    if uses_nu_commands && config.nushell.is_none() {
+    if uses_nu_commands && !config.manages_nushell() {
         findings.push(Finding::Warning(
-            "manifest runs commands through Nushell but has no 'nushell' section; \
-             nu must already be installed on the host"
+            "manifest runs commands through Nushell but neither a 'nushell' section \
+             nor an enabled nushell shell installs it; nu must already be on the host"
                 .to_owned(),
         ));
     }
@@ -93,6 +93,15 @@ fn lint_config(config: &SwissConfig, os: Os) -> Vec<Finding> {
     }
 
     for (module_name, module) in &config.shell_modules {
+        if let Some(package) = &module.package {
+            if !package_is_declared(config, package) {
+                findings.push(Finding::Warning(format!(
+                    "shell module '{}' references package '{}', but no dependency or \
+                     package_manager section installs it",
+                    module_name, package
+                )));
+            }
+        }
         for init_shell in module.init.keys() {
             if ShellKind::from_name(init_shell).is_none() {
                 findings.push(Finding::Warning(format!(
@@ -119,6 +128,37 @@ fn lint_config(config: &SwissConfig, os: Os) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Whether anything in the manifest installs `package`: a cargo dependency, a
+/// custom dependency, or a system package on any OS.
+fn package_is_declared(config: &SwissConfig, package: &str) -> bool {
+    if config.dependencies.cargo.contains_key(package)
+        || config.dependencies.customs.contains_key(package)
+    {
+        return true;
+    }
+    let backends = [
+        config
+            .package_manager
+            .linux
+            .as_ref()
+            .and_then(|linux| linux.apt.as_ref()),
+        config
+            .package_manager
+            .macos
+            .as_ref()
+            .and_then(|macos| macos.brew.as_ref()),
+        config
+            .package_manager
+            .windows
+            .as_ref()
+            .and_then(|windows| windows.scoop.as_ref()),
+    ];
+    backends
+        .into_iter()
+        .flatten()
+        .any(|backend| backend.packages.iter().any(|name| name == package))
 }
 
 /// Collects every command in the manifest together with a human label.
@@ -158,18 +198,21 @@ fn all_commands(config: &SwissConfig) -> Vec<(String, CommandSpec)> {
     commands
 }
 
-/// Installation checks: are the tools Swiss relies on available?
-pub fn installation_checks(os: Os) -> Vec<(&'static str, bool)> {
-    let mut checks: Vec<(&'static str, bool)> = vec![
-        ("nu", tool_available("nu", &["--version"])),
-        ("cargo", tool_available("cargo", &["--version"])),
-        ("rustup", tool_available("rustup", &["--version"])),
-        ("git", tool_available("git", &["--version"])),
+/// Installation checks: (tool, available, required). Non-required tools are
+/// the ones `swiss apply` can bootstrap itself (rustup/cargo via the rust
+/// installer, nu via the `nushell` section), so missing them on a fresh host
+/// is expected rather than an error.
+pub fn installation_checks(os: Os) -> Vec<(&'static str, bool, bool)> {
+    let mut checks: Vec<(&'static str, bool, bool)> = vec![
+        ("nu", tool_available("nu", &["--version"]), false),
+        ("cargo", tool_available("cargo", &["--version"]), false),
+        ("rustup", tool_available("rustup", &["--version"]), false),
+        ("git", tool_available("git", &["--version"]), true),
     ];
     match os {
-        Os::Linux => checks.push(("apt-get", tool_available("apt-get", &["--version"]))),
-        Os::Macos => checks.push(("brew", tool_available("brew", &["--version"]))),
-        Os::Windows => checks.push(("scoop", tool_available("scoop", &["--version"]))),
+        Os::Linux => checks.push(("apt-get", tool_available("apt-get", &["--version"]), true)),
+        Os::Macos => checks.push(("brew", tool_available("brew", &["--version"]), true)),
+        Os::Windows => checks.push(("scoop", tool_available("scoop", &["--version"]), true)),
     }
     checks
 }
@@ -207,6 +250,12 @@ mod tests {
             cache: SwissCache::default(),
             nu_installed: true,
             nu_version: Some("0.101.0".to_owned()),
+            cargo_installed: true,
+            binstall_installed: true,
+            available_shells: ["zsh", "bash", "pwsh"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
         }
     }
 
@@ -249,16 +298,74 @@ mod tests {
 
     #[test]
     fn nu_commands_without_nushell_section_warn() {
+        // Plain strings now run through the portable system shell, so an
+        // explicit `shell: nu` is what pulls in the Nushell requirement.
         let manifest = manifest_from(indoc! {"
             dependencies:
               customs:
                 tool:
-                  install: [\"echo hi\"]
+                  install:
+                    - run: ls | first
+                      shell: nu
         "});
         let findings = validate_manifest(&manifest, &test_context());
         assert!(messages(&findings)
             .iter()
-            .any(|message| message.contains("no 'nushell' section")));
+            .any(|message| message.contains("neither a 'nushell' section")));
+
+        // A nushell shell enabled in `shells` also satisfies the requirement.
+        let manifest = manifest_from(indoc! {"
+            shells:
+              nushell:
+                mode: managed-loader
+            dependencies:
+              customs:
+                tool:
+                  install:
+                    - run: ls | first
+                      shell: nu
+        "});
+        let findings = validate_manifest(&manifest, &test_context());
+        assert!(!messages(&findings)
+            .iter()
+            .any(|message| message.contains("neither a 'nushell' section")));
+    }
+
+    #[test]
+    fn module_package_without_installer_warns() {
+        let manifest = manifest_from(indoc! {"
+            shells:
+              zsh:
+                modules: [starship]
+            shell_modules:
+              starship:
+                package: starship
+                init:
+                  zsh: eval \"$(starship init zsh)\"
+        "});
+        let findings = validate_manifest(&manifest, &test_context());
+        assert!(messages(&findings)
+            .iter()
+            .any(|message| message.contains("references package 'starship'")));
+
+        // Declaring it as a cargo dependency silences the warning.
+        let manifest = manifest_from(indoc! {"
+            dependencies:
+              cargo:
+                starship:
+            shells:
+              zsh:
+                modules: [starship]
+            shell_modules:
+              starship:
+                package: starship
+                init:
+                  zsh: eval \"$(starship init zsh)\"
+        "});
+        let findings = validate_manifest(&manifest, &test_context());
+        assert!(!messages(&findings)
+            .iter()
+            .any(|message| message.contains("references package")));
     }
 
     #[test]

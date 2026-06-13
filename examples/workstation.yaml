@@ -6,6 +6,8 @@
 #
 # File templates are resolved relative to this manifest (./templates).
 
+# Nushell is just another shell Swiss can install. Listing the section pins a
+# version; omit `version` (or just enable `shells.nushell`) to get the latest.
 nushell:
   version: "0.101.0"
 
@@ -13,6 +15,8 @@ rust:
   toolchain: "nightly"
   components:
     - rust-analyzer
+  # How to bootstrap rustup when cargo is missing (Swiss installs Rust itself
+  # if needed). Defaults to the official rustup one-liner when omitted.
   installer:
     linux:
       - 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
@@ -107,10 +111,14 @@ dependencies:
         - "hx --grammar fetch"
         - "hx --grammar build"
       post-install:
+        # These use Nushell syntax, so they declare `shell: nu` explicitly
+        # (plain strings run through the portable system shell by default).
         linux: # if macos not defined consumes linux
-          - "ln -s (echo $env.PWD \"/runtime\" | str collect )  ~/.config/helix/runtime"
+          - run: 'ln -s (echo $env.PWD "/runtime" | str collect)  ~/.config/helix/runtime'
+            shell: nu
         windows:
-          - "mklink /D \"%APPDATA%\\Helix\\runtime\" (echo $env.PWD \"\\runtime\" | str collect )"
+          - run: 'mklink /D "%APPDATA%\Helix\runtime" (echo $env.PWD "\runtime" | str collect)'
+            shell: nu
     wezterm:
       git:
         repo: "https://github.com/wez/wezterm"
@@ -122,7 +130,8 @@ dependencies:
         - "cargo build --release"
       post-install:
         linux:
-          - "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| cp $it.name /usr/local/bin }"
+          - run: "cd target/release; ls -l | where $it.mode =~ x && $it.type != dir | each { |$it| cp $it.name /usr/local/bin }"
+            shell: nu
       windows: false
       macos: false
 
@@ -137,7 +146,10 @@ files:
   - source: ./templates/zellij.yaml
     dest: ~/.config/zellij/config.yaml
     overwrite: false
-  # Rich Nushell modules aggregated by the managed loader (`swiss init`).
+  # Rich Nushell drop-in modules: every *.nu under ~/.swiss/{env,conf} is
+  # appended verbatim to the script `swiss init --shell nushell` renders at
+  # shell startup. Use these for snippets that don't fit the declarative
+  # `shell_modules` model (custom commands, complex prompt setups...).
   - source: ./templates/nu/fnm.nu
     dest: ~/.swiss/env/fnm.nu
     overwrite: true
@@ -159,9 +171,10 @@ shells:
   nushell:
     enabled: true
     mode: managed-loader
-    user_modules_dir: ~/.swiss
-    env_modules: []
-    conf_modules: []
+    # Declarative modules render into the init script too, alongside the
+    # ~/.swiss drop-ins above.
+    modules:
+      - path
   # Optional: enable to get the same basics in zsh.
   zsh:
     enabled: false

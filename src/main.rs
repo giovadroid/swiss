@@ -5,11 +5,11 @@ mod doctor;
 mod embedded;
 mod executor;
 mod expand;
-mod loader;
 mod logger;
 mod parser;
 mod persistence;
 mod plan;
+mod report;
 mod shellgen;
 
 use crate::cli::{Command, ManifestArgs};
@@ -24,68 +24,109 @@ use crate::plan::{build_plan, Plan, PlanContext, Step};
 use crate::shellgen::ShellKind;
 use anyhow::{bail, Context};
 use clap::Parser;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// `swiss init [--shell <name>]`: the per-shell startup hook.
+/// `swiss init --shell <name>`: prints the complete init script for that
+/// shell, rendered live from the registered manifest plus the dynamic state
+/// (cached aliases, SWISS variables). Shells evaluate it at startup
+/// (`eval "$(swiss init --shell zsh)"`); Nushell saves it to
+/// `~/.config/swiss/init.nu` and sources it.
 ///
-/// - nushell (default): aggregates the dynamic loader files and prints the
-///   Swiss environment as YAML for `load-env`.
-/// - zsh/bash/pwsh: prints the generated init file so it can be sourced or
-///   evaluated manually (`eval "$(swiss init --shell zsh)"`).
+/// This command must never break shell startup: any problem degrades to a
+/// minimal script and a stderr log, always exiting 0.
 fn command_init(shell: Option<&str>) -> CommandResult<()> {
     let kind = match shell {
-        None => ShellKind::Nushell,
         Some(name) => {
             ShellKind::from_name(name).ok_or_else(|| anyhow::anyhow!("Unknown shell '{}'", name))?
         }
+        None => detect_shell_from_env().ok_or_else(|| {
+            anyhow::anyhow!("Could not detect the shell; pass --shell <nushell|zsh|bash|pwsh>")
+        })?,
     };
 
-    if kind == ShellKind::Nushell {
-        return command_init_nu();
-    }
+    let cache = SwissCache::load().unwrap_or_default();
+    let config = registered_config(&cache);
+    let modules = config
+        .shells
+        .get(kind.name())
+        .filter(|target| target.enabled)
+        .map(|target| target.modules.clone())
+        .unwrap_or_default();
+    let aliases: std::collections::BTreeMap<String, String> = cache
+        .aliases()
+        .iter()
+        .map(|(alias, command)| (alias.clone(), command.clone()))
+        .collect();
 
-    let init_file = home::home_dir()
-        .context("Unable to obtain home directory")?
-        .join(".config/swiss")
-        .join(kind.init_file_name().expect("non-nushell init file"));
-    if init_file.exists() {
-        print!("{}", std::fs::read_to_string(init_file)?);
-    } else {
-        log::debug!(
-            "No generated init for {} yet; run `swiss setup` first",
-            kind.name()
-        );
+    match shellgen::render_init_script(&config, kind, &modules, &aliases) {
+        Ok(mut script) => {
+            if kind == ShellKind::Nushell {
+                if let Some(home) = home::home_dir() {
+                    script.push_str(&nu_user_dropins(&home));
+                }
+            }
+            print!("{}", script);
+        }
+        Err(error) => log::warn!("swiss init degraded to an empty script: {:#}", error),
     }
     Ok(())
 }
 
-fn command_init_nu() -> CommandResult<()> {
-    let (home_dir, user_dir) = loader::initialize_nu_files()?;
-    let data_envs: HashMap<String, String> = HashMap::from_iter(vec![
-        ("SWISS_VERSION".to_string(), VERSION.to_string()),
-        (
-            "SWISS_HOME".to_string(),
-            home_dir
-                .to_str()
-                .expect("Unable to get SWISS_HOME")
-                .to_string(),
-        ),
-        (
-            "SWISS_USER_HOME".to_string(),
-            user_dir
-                .to_str()
-                .expect("Unable to get SWISS_USER_HOME")
-                .to_string(),
-        ),
-    ]);
+/// The manifest registered by setup/apply, reloaded fresh so module changes
+/// show up at the next shell start without re-applying. Missing or broken
+/// state degrades to an empty config.
+fn registered_config(cache: &SwissCache) -> crate::parser::SwissConfig {
+    let Some(path) = cache.get(MANIFEST_PATH_KEY) else {
+        return crate::parser::SwissConfig::default();
+    };
+    let profiles: Vec<String> = cache
+        .get(MANIFEST_PROFILES_KEY)
+        .map(|raw| {
+            raw.split('\n')
+                .filter(|profile| !profile.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    match config_loader::load_manifest(Path::new(path), &profiles) {
+        Ok(manifest) => manifest.config,
+        Err(error) => {
+            log::warn!("Ignoring registered manifest {}: {:#}", path, error);
+            crate::parser::SwissConfig::default()
+        }
+    }
+}
 
-    println!(
-        "{}",
-        serde_yaml::to_string(&data_envs).expect("Failed to serialize")
-    );
-    Ok(())
+/// User drop-in modules for Nushell: every `*.nu` under `~/.swiss/env` then
+/// `~/.swiss/conf` is appended verbatim to the generated init script.
+fn nu_user_dropins(home: &Path) -> String {
+    let mut output = String::new();
+    for dir in [home.join(".swiss/env"), home.join(".swiss/conf")] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().map(|ext| ext == "nu").unwrap_or(false))
+            .collect();
+        files.sort();
+        for file in files {
+            match std::fs::read_to_string(&file) {
+                Ok(body) => {
+                    output.push('\n');
+                    output.push_str(&format!(
+                        "# swiss user module: {}\n{}\n",
+                        file.display(),
+                        body.trim_end()
+                    ));
+                }
+                Err(error) => log::warn!("Skipping user module {}: {}", file.display(), error),
+            }
+        }
+    }
+    output
 }
 
 fn load_manifest(path: &Path, profiles: &[String]) -> CommandResult<LoadedManifest> {
@@ -95,6 +136,25 @@ fn load_manifest(path: &Path, profiles: &[String]) -> CommandResult<LoadedManife
     )
 }
 
+fn tool_on_path(program: &str) -> bool {
+    std::process::Command::new(program)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn cargo_bin_exists(home: &Path, name: &str) -> bool {
+    let binary = if cfg!(target_os = "windows") {
+        format!("{}.exe", name)
+    } else {
+        name.to_owned()
+    };
+    home.join(".cargo/bin").join(binary).exists()
+}
+
 fn plan_context(manifest: &LoadedManifest) -> PlanContext {
     let nu_installed = NuShell::is_installed();
     let nu_version = if nu_installed {
@@ -102,9 +162,26 @@ fn plan_context(manifest: &LoadedManifest) -> PlanContext {
     } else {
         None
     };
+    let home = home::home_dir().expect("Unable to obtain home directory");
+
+    // Only probe the shells the manifest actually mentions.
+    let available_shells = manifest
+        .config
+        .shells
+        .keys()
+        .filter_map(|name| ShellKind::from_name(name))
+        .filter(|kind| *kind != ShellKind::Nushell)
+        .filter(|kind| tool_on_path(kind.name()))
+        .map(|kind| kind.name().to_owned())
+        .collect();
+
     PlanContext {
+        cargo_installed: cargo_bin_exists(&home, "cargo") || tool_on_path("cargo"),
+        binstall_installed: cargo_bin_exists(&home, "cargo-binstall")
+            || tool_on_path("cargo-binstall"),
+        available_shells,
         os: Os::current(),
-        home: home::home_dir().expect("Unable to obtain home directory"),
+        home,
         base_dir: manifest.base_dir.clone(),
         cache: SwissCache::load().unwrap_or_default(),
         nu_installed,
@@ -143,20 +220,45 @@ fn register_manifest(path: &Path, profiles: &[String]) {
     cache.set(MANIFEST_PROFILES_KEY, &profiles.join("\n"));
 }
 
-fn execute_plan(plan: &Plan, manifest: &LoadedManifest, yes: bool) -> CommandResult<bool> {
+/// Runs the plan. Returns `None` when the user aborted at the confirmation
+/// prompt, or `Some(outcome)` describing what ran (possibly with failures).
+fn execute_plan(
+    plan: &Plan,
+    manifest: &LoadedManifest,
+    yes: bool,
+) -> CommandResult<Option<report::Outcome>> {
     if plan.is_empty() {
         println!("Nothing to do: everything is up to date.");
-        return Ok(true);
+        return Ok(Some(report::Outcome::default()));
     }
     if !confirm(plan, yes)? {
         println!("Aborted.");
-        return Ok(false);
+        return Ok(None);
     }
     apply_env_defaults(manifest);
+    report::open_run_log();
     let mut executor = Executor::new(SwissCache::load().unwrap_or_default());
-    executor.execute(plan, Some(&manifest.fingerprint))?;
-    println!("Done: {} step(s) applied.", plan.steps.len());
-    Ok(true)
+    let outcome = executor.execute(plan, Some(&manifest.fingerprint));
+    report::print_summary(&outcome);
+    Ok(Some(outcome))
+}
+
+/// Bails when a run had failures, pointing at the log; otherwise returns Ok so
+/// the caller can register the manifest. A clean or aborted run is a no-op.
+fn finish_run(outcome: &report::Outcome) -> CommandResult<()> {
+    if outcome.succeeded() {
+        return Ok(());
+    }
+    let log_hint = outcome
+        .log_path
+        .as_ref()
+        .map(|path| format!(" See the full log at {}.", path.display()))
+        .unwrap_or_default();
+    bail!(
+        "{} step(s) failed; the rest were applied.{} Re-run to retry.",
+        outcome.failed,
+        log_hint
+    )
 }
 
 fn command_plan(args: &ManifestArgs) -> CommandResult<()> {
@@ -189,8 +291,9 @@ fn command_apply(
         log::warn!("Some steps require administrator rights and may fail.");
     }
 
-    if execute_plan(&plan, &manifest, yes)? {
+    if let Some(outcome) = execute_plan(&plan, &manifest, yes)? {
         register_manifest(&args.manifest, &args.profiles);
+        finish_run(&outcome)?;
     }
     Ok(())
 }
@@ -229,8 +332,9 @@ fn command_setup(
         );
     }
 
-    if execute_plan(&plan, &manifest, yes)? {
+    if let Some(outcome) = execute_plan(&plan, &manifest, yes)? {
         register_manifest(&args.manifest, &args.profiles);
+        finish_run(&outcome)?;
     }
     Ok(())
 }
@@ -276,20 +380,22 @@ fn materialize_template(path: &Path, template: Option<&str>) -> CommandResult<()
     Ok(())
 }
 
-/// Detects the shell to register from $SHELL (zsh/bash); nushell when the
+/// Detects the running shell from $SHELL (zsh/bash/nu...).
+fn detect_shell_from_env() -> Option<ShellKind> {
+    let shell_path = std::env::var("SHELL").ok()?;
+    let name = Path::new(&shell_path).file_name()?.to_str()?;
+    ShellKind::from_name(name)
+}
+
+/// Shell to register during setup: the running one, or nushell when the
 /// manifest manages it.
 fn detect_shell(manifest: &LoadedManifest) -> Option<ShellKind> {
-    if let Ok(shell_path) = std::env::var("SHELL") {
-        if let Some(name) = Path::new(&shell_path).file_name().and_then(|n| n.to_str()) {
-            if let Some(kind) = ShellKind::from_name(name) {
-                return Some(kind);
-            }
-        }
-    }
-    if manifest.config.nushell.is_some() {
-        return Some(ShellKind::Nushell);
-    }
-    None
+    detect_shell_from_env().or_else(|| {
+        manifest
+            .config
+            .manages_nushell()
+            .then_some(ShellKind::Nushell)
+    })
 }
 
 /// Extra steps for `setup`: register the init hook for the running/requested
@@ -323,33 +429,20 @@ fn shell_registration_steps(
     );
 
     if kind == ShellKind::Nushell {
-        // Minimal managed loader so `swiss init` works at startup.
-        let target = crate::parser::ShellTargetConfig::default();
-        return shellgen::managed_loader_steps_for(&manifest.config, &target, context);
+        return Ok(shellgen::nushell_registration_steps(context));
     }
 
-    let init_file = kind.init_file_name().expect("non-nushell init file");
     let target_file = kind
         .default_target()
         .expect("non-nushell shells have a default target")
         .to_owned();
-    Ok(vec![
-        Step::WriteFile {
-            path: context.home.join(".config/swiss").join(init_file),
-            content: shellgen::init_file_content(&manifest.config, kind, &[])?.into_bytes(),
-            overwrite: false,
-            append_if_missing: false,
-            backup: false,
-            requires_admin: false,
-        },
-        Step::PatchBlock {
-            target: target_file,
-            block: shellgen::REGISTRATION_BLOCK.to_owned(),
-            content: kind
-                .registration_line()
-                .expect("non-nushell registration line"),
-        },
-    ])
+    Ok(vec![Step::PatchBlock {
+        target: target_file,
+        block: shellgen::REGISTRATION_BLOCK.to_owned(),
+        content: kind
+            .registration_line()
+            .expect("non-nushell registration line"),
+    }])
 }
 
 fn command_update(
@@ -443,9 +536,16 @@ fn command_status() -> CommandResult<()> {
 fn command_doctor(manifest_path: Option<&Path>, profiles: &[String]) -> CommandResult<()> {
     println!("# installation");
     let mut all_ok = true;
-    for (name, available) in doctor::installation_checks(Os::current()) {
-        println!("{:<10} {}", name, if available { "ok" } else { "MISSING" });
-        all_ok &= available;
+    for (name, available, required) in doctor::installation_checks(Os::current()) {
+        let status = if available {
+            "ok"
+        } else if required {
+            "MISSING"
+        } else {
+            "missing (bootstrapped by `swiss apply` when the manifest needs it)"
+        };
+        println!("{:<10} {}", name, status);
+        all_ok &= available || !required;
     }
 
     if let Some(path) = manifest_path {

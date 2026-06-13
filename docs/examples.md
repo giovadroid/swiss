@@ -41,7 +41,9 @@ swiss init --shell zsh    # print the generated zsh init code
 ## `examples/bootstrap.yaml` + `examples/base.yaml`
 
 Composition demo: a shared base included by a root manifest with `workstation`
-and `service-host` profiles.
+and `service-host` profiles. The workstation profile sets up a zsh environment
+with oh-my-zsh (cloned into `~/.config/swiss/crates/ohmyzsh`), zoxide and
+starship; zsh itself is installed automatically when missing.
 
 ```bash
 swiss plan --manifest examples/bootstrap.yaml --profile workstation

@@ -13,16 +13,32 @@ profiles:
         bat:
         zoxide:
         starship:
+      customs:
+        ohmyzsh:
+          windows: false
+          git:
+            repo: https://github.com/ohmyzsh/ohmyzsh.git
+            depth: 1
     shells:
       zsh:
         enabled: true
         mode: snippet
-        modules: [path, starship]
+        # Order matters: oh-my-zsh first, then prompt/tool inits override it.
+        modules: [path, ohmyzsh, zoxide, starship]
     shell_modules:
       path:
         env:
           PATH:
             prepend: ["~/.cargo/bin"]
+      ohmyzsh:
+        env:
+          ZSH: $HOME/.config/swiss/crates/ohmyzsh
+        init:
+          zsh: '[ -f "$ZSH/oh-my-zsh.sh" ] && source "$ZSH/oh-my-zsh.sh"'
+      zoxide:
+        package: zoxide
+        init:
+          zsh: eval "$(zoxide init zsh)"
       starship:
         package: starship
         init:

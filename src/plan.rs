@@ -6,7 +6,7 @@ use crate::parser::{
 use crate::persistence::{Dependency, DependencyStatus, DependencyType, SwissCache, NUSHELL_DEP};
 use crate::shellgen;
 use anyhow::{bail, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -23,6 +23,13 @@ pub struct PlanContext {
     pub cache: SwissCache,
     pub nu_installed: bool,
     pub nu_version: Option<String>,
+    /// `cargo` is reachable (on PATH or at `~/.cargo/bin/cargo`).
+    pub cargo_installed: bool,
+    /// `cargo-binstall` is reachable; when false, Swiss bootstraps it with
+    /// plain `cargo install` instead of binstall-ing it with itself.
+    pub binstall_installed: bool,
+    /// Shell binaries (zsh/bash/pwsh) found on the host, by `ShellKind` name.
+    pub available_shells: BTreeSet<String>,
 }
 
 impl Default for Os {
@@ -84,6 +91,12 @@ pub enum Step {
 }
 
 impl Step {
+    /// Pure cache writes with no observable system effect; hidden from the
+    /// progress view and skipped when their preceding action failed.
+    pub fn is_bookkeeping(&self) -> bool {
+        matches!(self, Step::RecordDep { .. } | Step::RecordAliases { .. })
+    }
+
     pub fn requires_admin(&self) -> bool {
         match self {
             Step::Command { requires_admin, .. } => *requires_admin,
@@ -240,8 +253,8 @@ pub fn build_plan(manifest: &LoadedManifest, context: &PlanContext) -> Result<Pl
     validate_env_requirements(config)?;
 
     steps.extend(package_manager_steps(config, context.os));
-    steps.extend(rust_component_steps(config));
-    steps.extend(nushell_steps(config, context));
+    steps.extend(shellgen::shell_package_steps(config, context)?);
+    steps.extend(rust_steps(config, context));
     steps.extend(cargo_steps(config, context));
     steps.extend(custom_steps(config, context)?);
     steps.extend(file_steps(config, context)?);
@@ -339,16 +352,108 @@ pub(crate) fn package_manager_steps(config: &SwissConfig, os: Os) -> Vec<Step> {
     steps
 }
 
-pub(crate) fn rust_component_steps(config: &SwissConfig) -> Vec<Step> {
-    config
-        .rust
-        .components
-        .iter()
-        .map(|component| Step::Command {
-            program: "rustup".to_owned(),
-            args: vec!["component".to_owned(), "add".to_owned(), component.clone()],
+/// Rust toolchain bootstrap: install rustup/cargo when missing (anything in
+/// the manifest that needs cargo would fail otherwise), then the requested
+/// toolchain and components.
+pub(crate) fn rust_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let rust = &config.rust;
+
+    let needs_cargo = !config.dependencies.cargo.is_empty()
+        || config.manages_nushell()
+        || !rust.toolchain.is_empty()
+        || !rust.components.is_empty();
+
+    if needs_cargo && !context.cargo_installed {
+        steps.extend(rust_installer_steps(config, context.os));
+    }
+
+    // A fresh rustup install is not on the current PATH yet, so use the
+    // absolute path in that case; otherwise trust whatever resolves on PATH.
+    let rustup = if context.cargo_installed {
+        "rustup".to_owned()
+    } else {
+        context
+            .home
+            .join(".cargo/bin/rustup")
+            .to_string_lossy()
+            .to_string()
+    };
+
+    if !rust.toolchain.is_empty() {
+        steps.push(Step::Command {
+            program: rustup.clone(),
+            args: vec![
+                "toolchain".to_owned(),
+                "install".to_owned(),
+                rust.toolchain.clone(),
+            ],
             cwd: None,
             requires_admin: false,
+        });
+    }
+
+    for component in &rust.components {
+        let mut args = vec!["component".to_owned(), "add".to_owned()];
+        if !rust.toolchain.is_empty() {
+            args.push("--toolchain".to_owned());
+            args.push(rust.toolchain.clone());
+        }
+        args.push(component.clone());
+        steps.push(Step::Command {
+            program: rustup.clone(),
+            args,
+            cwd: None,
+            requires_admin: false,
+        });
+    }
+
+    steps
+}
+
+/// Commands that install rustup: the manifest's `rust.installer` for the
+/// current OS, or the official rustup one-liner as fallback. Plain entries run
+/// through sh/powershell (not Nushell): nu may not exist before Rust does.
+fn rust_installer_steps(config: &SwissConfig, os: Os) -> Vec<Step> {
+    let bootstrap_shell = match os {
+        Os::Windows => "powershell",
+        _ => "sh",
+    };
+
+    let custom = config
+        .rust
+        .installer
+        .for_os(os)
+        .filter(|commands| commands.iter().any(|command| !command.is_empty()));
+
+    let Some(commands) = custom else {
+        let default_command = match os {
+            Os::Windows => {
+                "Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile \"$env:TEMP\\rustup-init.exe\"; & \"$env:TEMP\\rustup-init.exe\" -y"
+            }
+            _ => "curl https://sh.rustup.rs -sSf | sh -s -- -y",
+        };
+        return vec![Step::ShellCommand {
+            shell: bootstrap_shell.to_owned(),
+            command: default_command.to_owned(),
+            cwd: None,
+            requires_admin: false,
+        }];
+    };
+
+    commands
+        .iter()
+        .filter(|command| !command.is_empty())
+        .map(|command| Step::ShellCommand {
+            shell: match command {
+                CommandSpec::Plain(_) => bootstrap_shell.to_owned(),
+                CommandSpec::Detailed { shell, .. } => {
+                    shell.clone().unwrap_or_else(|| bootstrap_shell.to_owned())
+                }
+            },
+            command: command.run().to_owned(),
+            cwd: None,
+            requires_admin: command.requires_admin(),
         })
         .collect()
 }
@@ -361,42 +466,30 @@ fn cargo_bin(context: &PlanContext) -> String {
         .to_string()
 }
 
-fn nushell_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
-    let Some(nushell) = &config.nushell else {
-        return Vec::new();
-    };
-
-    let up_to_date = context.nu_installed
-        && context
-            .nu_version
-            .as_ref()
-            .map(|version| version.contains(nushell.version.as_str()))
-            .unwrap_or(false);
-    if up_to_date {
-        return Vec::new();
+/// When the manifest wants Nushell (a `nushell` section or the nushell shell
+/// enabled) and the host does not satisfy it, returns the version to install
+/// (`None` inside = latest). Nushell is just another binstall-able tool.
+fn nushell_install_request(config: &SwissConfig, context: &PlanContext) -> Option<Option<String>> {
+    if !config.manages_nushell() {
+        return None;
     }
-
-    vec![
-        Step::Command {
-            program: cargo_bin(context),
-            args: vec![
-                "install".to_owned(),
-                format!("nu@{}", nushell.version),
-                "--all-features".to_owned(),
-            ],
-            cwd: None,
-            requires_admin: false,
-        },
-        Step::LinkNuBinaries,
-        Step::RecordDep {
-            dep: Dependency::new(
-                NUSHELL_DEP.to_owned(),
-                Some(nushell.version.clone()),
-                DependencyStatus::Installed,
-                DependencyType::Cargo,
-            ),
-        },
-    ]
+    let pin = config.nushell_version().map(str::to_owned);
+    let up_to_date = context.nu_installed
+        && pin
+            .as_ref()
+            .map(|pinned| {
+                context
+                    .nu_version
+                    .as_ref()
+                    .map(|version| version.contains(pinned.as_str()))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+    if up_to_date {
+        None
+    } else {
+        Some(pin)
+    }
 }
 
 fn command_steps(commands: &[CommandSpec], cwd: Option<PathBuf>) -> Vec<Step> {
@@ -412,13 +505,37 @@ fn command_steps(commands: &[CommandSpec], cwd: Option<PathBuf>) -> Vec<Step> {
         .collect()
 }
 
+const BINSTALL: &str = "cargo-binstall";
+
+/// `cargo install` step that bootstraps cargo-binstall without using binstall
+/// itself (the chicken-and-egg case on a fresh host).
+fn binstall_bootstrap_step(cargo: &str, version: &str) -> Step {
+    let mut args = vec![
+        "install".to_owned(),
+        "--locked".to_owned(),
+        BINSTALL.to_owned(),
+    ];
+    if version != "*" {
+        args.push("--version".to_owned());
+        args.push(version.to_owned());
+    }
+    Step::Command {
+        program: cargo.to_owned(),
+        args,
+        cwd: None,
+        requires_admin: false,
+    }
+}
+
 fn cargo_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
     let mut steps = Vec::new();
     let cargo = cargo_bin(context);
 
     // cargo-binstall bootstraps the rest, so it always goes first.
     let mut names: Vec<&String> = config.dependencies.cargo.keys().collect();
-    names.sort_by_key(|name| (name.as_str() != "cargo-binstall", name.to_owned()));
+    names.sort_by_key(|name| (name.as_str() != BINSTALL, name.to_owned()));
+
+    let mut binstall_ready = context.binstall_installed;
 
     for name in names {
         let dep_config = config.dependencies.cargo[name].clone().unwrap_or_default();
@@ -428,7 +545,11 @@ fn cargo_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
             continue;
         }
 
-        if !dep_config.is_generic_version() {
+        // The cache can claim binstall is installed while the binary is gone;
+        // trust the probe, never the cache, before skipping its install.
+        let bootstrapping_binstall = name == BINSTALL && !binstall_ready;
+
+        if !dep_config.is_generic_version() && !bootstrapping_binstall {
             if let Some(installed) = context.cache.get_dep(name) {
                 if installed
                     .version()
@@ -437,6 +558,46 @@ fn cargo_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
                 {
                     continue;
                 }
+            }
+        }
+
+        if !binstall_ready {
+            // First install that needs binstall: bootstrap it with plain
+            // cargo. Covers both an explicit cargo-binstall entry and
+            // manifests that rely on it implicitly.
+            let version = if name == BINSTALL {
+                dep_config.version.as_str()
+            } else {
+                "*"
+            };
+            steps.push(binstall_bootstrap_step(&cargo, version));
+            binstall_ready = true;
+
+            if name != BINSTALL {
+                steps.push(Step::RecordDep {
+                    dep: Dependency::new(
+                        BINSTALL.to_owned(),
+                        Some("*".to_owned()),
+                        DependencyStatus::UpToDate,
+                        DependencyType::Cargo,
+                    ),
+                });
+            } else {
+                steps.extend(command_steps(&dep_config.commands, None));
+                steps.push(Step::RecordDep {
+                    dep: Dependency::new(
+                        name.clone(),
+                        Some(dep_config.version.clone()),
+                        DependencyStatus::UpToDate,
+                        DependencyType::Cargo,
+                    ),
+                });
+                if !dep_config.alias.is_empty() {
+                    steps.push(Step::RecordAliases {
+                        aliases: dep_config.alias.clone(),
+                    });
+                }
+                continue;
             }
         }
 
@@ -468,6 +629,41 @@ fn cargo_steps(config: &SwissConfig, context: &PlanContext) -> Vec<Step> {
                 aliases: dep_config.alias.clone(),
             });
         }
+    }
+
+    // Nushell rides the same pipeline: binstall'd (latest or pinned) and then
+    // linked so login shells can find it.
+    if let Some(pin) = nushell_install_request(config, context) {
+        if !binstall_ready {
+            steps.push(binstall_bootstrap_step(&cargo, "*"));
+            steps.push(Step::RecordDep {
+                dep: Dependency::new(
+                    BINSTALL.to_owned(),
+                    Some("*".to_owned()),
+                    DependencyStatus::UpToDate,
+                    DependencyType::Cargo,
+                ),
+            });
+        }
+        let package = match &pin {
+            Some(version) => format!("nu@{}", version),
+            None => "nu".to_owned(),
+        };
+        steps.push(Step::Command {
+            program: cargo.clone(),
+            args: vec!["binstall".to_owned(), "-y".to_owned(), package],
+            cwd: None,
+            requires_admin: false,
+        });
+        steps.push(Step::LinkNuBinaries);
+        steps.push(Step::RecordDep {
+            dep: Dependency::new(
+                NUSHELL_DEP.to_owned(),
+                Some(pin.unwrap_or_else(|| "*".to_owned())),
+                DependencyStatus::Installed,
+                DependencyType::Cargo,
+            ),
+        });
     }
 
     steps
@@ -626,6 +822,12 @@ mod tests {
             cache: SwissCache::default(),
             nu_installed: false,
             nu_version: None,
+            cargo_installed: true,
+            binstall_installed: true,
+            available_shells: ["zsh", "bash", "pwsh"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
         }
     }
 
@@ -665,7 +867,7 @@ mod tests {
             ..SwissConfig::default()
         };
 
-        let steps = rust_component_steps(&config);
+        let steps = rust_steps(&config, &test_context(Os::Linux));
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[0],
@@ -680,6 +882,93 @@ mod tests {
                 requires_admin: false,
             }
         );
+    }
+
+    #[test]
+    fn rust_toolchain_is_installed_and_scopes_components() {
+        let config = SwissConfig {
+            rust: RustConfig {
+                toolchain: "nightly".to_owned(),
+                components: vec!["clippy".to_owned()],
+                ..RustConfig::default()
+            },
+            ..SwissConfig::default()
+        };
+
+        let steps = rust_steps(&config, &test_context(Os::Linux));
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0],
+            Step::Command {
+                program: "rustup".to_owned(),
+                args: vec![
+                    "toolchain".to_owned(),
+                    "install".to_owned(),
+                    "nightly".to_owned()
+                ],
+                cwd: None,
+                requires_admin: false,
+            }
+        );
+        assert!(matches!(
+            &steps[1],
+            Step::Command { args, .. }
+                if args.contains(&"--toolchain".to_owned()) && args.contains(&"clippy".to_owned())
+        ));
+    }
+
+    #[test]
+    fn missing_cargo_triggers_default_rustup_installer() {
+        let mut config = SwissConfig::default();
+        config.dependencies.cargo.insert("ripgrep".to_owned(), None);
+
+        let mut context = test_context(Os::Linux);
+        context.cargo_installed = false;
+
+        let steps = rust_steps(&config, &context);
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            Step::ShellCommand { shell, command, .. } => {
+                assert_eq!(shell, "sh");
+                assert!(command.contains("sh.rustup.rs"));
+            }
+            other => panic!("expected installer shell command, got {:?}", other),
+        }
+
+        // Nothing needs cargo -> no installer even when cargo is missing.
+        let steps = rust_steps(&SwissConfig::default(), &context);
+        assert!(steps.is_empty());
+
+        // Cargo present -> no installer either.
+        let steps = rust_steps(&config, &test_context(Os::Linux));
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn missing_cargo_uses_manifest_installer_and_absolute_rustup() {
+        let config = SwissConfig::parse(indoc! {"
+            rust:
+              toolchain: nightly
+              installer:
+                linux:
+                  - 'curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain none'
+        "})
+        .unwrap();
+
+        let mut context = test_context(Os::Linux);
+        context.cargo_installed = false;
+
+        let steps = rust_steps(&config, &context);
+        assert!(matches!(
+            &steps[0],
+            Step::ShellCommand { shell, command, .. }
+                if shell == "sh" && command.contains("--default-toolchain none")
+        ));
+        // rustup is not on PATH yet, so the toolchain step uses ~/.cargo/bin.
+        assert!(matches!(
+            &steps[1],
+            Step::Command { program, .. } if program == "/home/tester/.cargo/bin/rustup"
+        ));
     }
 
     #[test]
@@ -910,19 +1199,186 @@ mod tests {
         }
     }
 
+    fn binstall_self_install_steps(steps: &[Step]) -> Vec<&Step> {
+        steps
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step,
+                    Step::Command { args, .. }
+                        if args[0] == "binstall" && args.contains(&"cargo-binstall".to_owned())
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn nushell_steps_skip_when_version_matches() {
+    fn missing_binstall_is_bootstrapped_with_plain_cargo_install() {
+        let mut config = SwissConfig::default();
+        config.dependencies.cargo.insert("bat".to_owned(), None);
+        config
+            .dependencies
+            .cargo
+            .insert("cargo-binstall".to_owned(), None);
+
+        let mut context = test_context(Os::Linux);
+        context.binstall_installed = false;
+
+        let steps = cargo_steps(&config, &context);
+
+        // binstall never installs itself.
+        assert!(binstall_self_install_steps(&steps).is_empty());
+        assert_eq!(
+            steps[0],
+            Step::Command {
+                program: "/home/tester/.cargo/bin/cargo".to_owned(),
+                args: vec![
+                    "install".to_owned(),
+                    "--locked".to_owned(),
+                    "cargo-binstall".to_owned(),
+                ],
+                cwd: None,
+                requires_admin: false,
+            }
+        );
+        // bat still goes through binstall afterwards.
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::Command { args, .. } if args[0] == "binstall" && args.contains(&"bat".to_owned())
+        )));
+    }
+
+    #[test]
+    fn missing_binstall_is_bootstrapped_even_when_not_in_manifest() {
+        let mut config = SwissConfig::default();
+        config.dependencies.cargo.insert("bat".to_owned(), None);
+
+        let mut context = test_context(Os::Linux);
+        context.binstall_installed = false;
+
+        let steps = cargo_steps(&config, &context);
+        assert!(matches!(
+            &steps[0],
+            Step::Command { args, .. } if args[0] == "install" && args.contains(&"cargo-binstall".to_owned())
+        ));
+        // The implicit bootstrap is recorded like any other dependency.
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::RecordDep { dep } if dep.name() == "cargo-binstall"
+        )));
+    }
+
+    #[test]
+    fn missing_binstall_bootstrap_honors_pinned_version_over_cache() {
+        let mut config = SwissConfig::default();
+        config.dependencies.cargo.insert(
+            "cargo-binstall".to_owned(),
+            Some(CargoCustomConfig {
+                version: "1.10.0".to_owned(),
+                ..CargoCustomConfig::default()
+            }),
+        );
+
+        let mut context = test_context(Os::Linux);
+        context.binstall_installed = false;
+        // Stale cache claiming it is installed must not skip the bootstrap.
+        context.cache.set_dep_in_memory(
+            "cargo-binstall",
+            &Dependency::new(
+                "cargo-binstall".to_owned(),
+                Some("1.10.0".to_owned()),
+                DependencyStatus::UpToDate,
+                DependencyType::Cargo,
+            ),
+        );
+
+        let steps = cargo_steps(&config, &context);
+        assert!(matches!(
+            &steps[0],
+            Step::Command { args, .. }
+                if args[0] == "install"
+                    && args.contains(&"--version".to_owned())
+                    && args.contains(&"1.10.0".to_owned())
+        ));
+    }
+
+    #[test]
+    fn installed_binstall_self_updates_through_binstall() {
+        let mut config = SwissConfig::default();
+        config
+            .dependencies
+            .cargo
+            .insert("cargo-binstall".to_owned(), None);
+
+        let steps = cargo_steps(&config, &test_context(Os::Linux));
+        // Self-update via binstall is fine once the binary exists.
+        assert_eq!(binstall_self_install_steps(&steps).len(), 1);
+        assert!(!steps.iter().any(|step| matches!(
+            step,
+            Step::Command { args, .. } if args[0] == "install"
+        )));
+    }
+
+    #[test]
+    fn nushell_install_skips_when_version_matches() {
         let config = SwissConfig::parse("nushell:\n  version: \"0.101.0\"").unwrap();
 
         let mut context = test_context(Os::Linux);
         context.nu_installed = true;
         context.nu_version = Some("0.101.0".to_owned());
-        assert!(nushell_steps(&config, &context).is_empty());
+        assert!(cargo_steps(&config, &context).is_empty());
 
+        // Outdated -> binstall the pinned version and link the binaries.
         context.nu_version = Some("0.99.0".to_owned());
-        let steps = nushell_steps(&config, &context);
-        assert!(matches!(steps[0], Step::Command { .. }));
+        let steps = cargo_steps(&config, &context);
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::Command { args, .. }
+                if args[0] == "binstall" && args.contains(&"nu@0.101.0".to_owned())
+        )));
         assert!(steps.contains(&Step::LinkNuBinaries));
+    }
+
+    #[test]
+    fn enabled_nushell_shell_installs_latest_nu() {
+        // No `nushell` section: enabling the shell is enough.
+        let config = SwissConfig::parse("shells:\n  nushell:\n    enabled: true\n").unwrap();
+
+        let context = test_context(Os::Linux);
+        let steps = cargo_steps(&config, &context);
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::Command { args, .. }
+                if args[0] == "binstall" && args.contains(&"nu".to_owned())
+        )));
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::RecordDep { dep } if dep.name() == NUSHELL_DEP
+        )));
+
+        // Installed nu satisfies the unpinned request: no reinstall loop.
+        let mut installed = test_context(Os::Linux);
+        installed.nu_installed = true;
+        installed.nu_version = Some("0.105.0".to_owned());
+        assert!(cargo_steps(&config, &installed).is_empty());
+    }
+
+    #[test]
+    fn nushell_install_bootstraps_binstall_when_missing() {
+        let config = SwissConfig::parse("nushell: {}").unwrap();
+        let mut context = test_context(Os::Linux);
+        context.binstall_installed = false;
+
+        let steps = cargo_steps(&config, &context);
+        assert!(matches!(
+            &steps[0],
+            Step::Command { args, .. }
+                if args[0] == "install" && args.contains(&"cargo-binstall".to_owned())
+        ));
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::Command { args, .. } if args[0] == "binstall" && args.contains(&"nu".to_owned())
+        )));
     }
 
     #[test]
@@ -986,6 +1442,51 @@ mod tests {
         assert!(write.requires_admin());
         assert!(plan.requires_admin());
         assert!(write.to_string().ends_with("[admin]"));
+    }
+
+    #[test]
+    fn bootstrap_example_workstation_profile_is_self_contained() {
+        // Mirrors `swiss apply --manifest examples/bootstrap.yaml --profile
+        // workstation` on a fresh host: no binstall, no zsh.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/bootstrap.yaml");
+        let manifest =
+            crate::config_loader::load_manifest(&path, &["workstation".to_owned()]).unwrap();
+        let mut context = test_context(Os::Linux);
+        context.binstall_installed = false;
+        context.available_shells.clear();
+
+        let plan = build_plan(&manifest, &context).unwrap();
+        let rendered = plan.render();
+
+        // zsh gets installed, and before its configuration is registered.
+        let zsh_install = rendered
+            .find("apt-get install -y zsh")
+            .expect("zsh install step");
+        let zshrc_patch = rendered.find("patch block 'init' in ~/.zshrc").unwrap();
+        assert!(zsh_install < zshrc_patch);
+
+        // binstall bootstraps via plain cargo install, never via itself.
+        assert!(rendered.contains("install --locked cargo-binstall"));
+        assert!(!rendered.contains("binstall -y cargo-binstall"));
+
+        // oh-my-zsh is cloned during apply.
+        assert!(rendered.contains("crates/ohmyzsh"));
+
+        // The zsh init code is rendered live by `swiss init`, not written to a
+        // file: oh-my-zsh must load before the starship prompt init.
+        let modules = manifest.config.shells.get("zsh").unwrap().modules.clone();
+        let init_zsh = crate::shellgen::render_init_script(
+            &manifest.config,
+            crate::shellgen::ShellKind::Zsh,
+            &modules,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(init_zsh.contains("export ZSH="));
+        let ohmyzsh = init_zsh.find("oh-my-zsh.sh").unwrap();
+        let starship = init_zsh.find("starship init zsh").unwrap();
+        assert!(ohmyzsh < starship, "oh-my-zsh must load before starship");
+        assert!(init_zsh.contains("zoxide init zsh"));
     }
 
     #[test]

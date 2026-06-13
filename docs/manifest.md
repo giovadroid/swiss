@@ -51,12 +51,15 @@ profiles:
 
 ```yaml
 nushell:
-  version: "0.101.0"
+  version: "0.101.0"   # optional: pin a version; omit for the latest
 ```
 
-If present, Swiss ensures this Nushell version is installed
-(`cargo install nu@<version> --all-features`) and symlinks the nu binaries to
-`/usr/local/bin` on Unix. If absent, Swiss does not manage Nushell.
+Nushell is just another shell Swiss can install. Swiss installs it when either
+this section is present **or** `shells.nushell` is enabled: it runs
+`cargo binstall -y nu[@<version>]` and symlinks the nu binaries to
+`/usr/local/bin` on Unix. The `nushell` section only exists to pin a version
+explicitly; an empty `nushell: {}` or an enabled `shells.nushell` gets the
+latest release. If neither is present, Swiss does not manage Nushell.
 
 ### `rust`
 
@@ -69,10 +72,13 @@ rust:
     linux: ['curl https://sh.rustup.rs -sSf | sh -s -- -y']
 ```
 
-`components` become `rustup component add <name>` steps. `toolchain` and
-`installer` are informational: they document how to bootstrap Rust per OS
-(Swiss itself is a Rust binary, so the real first bootstrap is a prebuilt
-release or an existing toolchain).
+When anything in the manifest needs cargo (cargo dependencies, the `nushell`
+section, `toolchain` or `components`) and cargo is not installed, Swiss first
+runs `installer` for the current OS — or the official rustup one-liner when no
+installer is declared. Plain installer entries run through `sh` (PowerShell on
+Windows), never Nushell, since nu may not exist yet. Then `toolchain` becomes
+`rustup toolchain install <name>` and `components` become
+`rustup component add [--toolchain <name>] <component>` steps.
 
 ### `package_manager`
 
@@ -113,6 +119,13 @@ dependencies:
 
 Packages install via `cargo binstall -y <name>[@version]`. Pinned versions
 already recorded in the cache are skipped; `*` (default) always reinstalls.
+
+When `cargo-binstall` itself is missing from the host, Swiss bootstraps it
+with plain `cargo install --locked cargo-binstall` (honouring a pinned
+version) before any binstall step — it never tries to install binstall with
+binstall, and it does this even when the manifest does not list
+`cargo-binstall` explicitly. Once the binary exists, a `cargo-binstall` entry
+self-updates through binstall as usual.
 
 ### `dependencies.customs`
 
@@ -201,9 +214,7 @@ shells:
   nushell:
     enabled: true
     mode: managed-loader        # default for nushell
-    env_modules: [path]         # generated into ~/.config/swiss/env/<m>.nu
-    conf_modules: [zoxide]      # generated into ~/.config/swiss/conf/<m>.nu
-    user_modules_dir: ~/.swiss  # extra user modules aggregated by `swiss init`
+    modules: [path]             # rendered into the init script by `swiss init`
   zsh:
     enabled: true
     mode: snippet               # default for zsh/bash
@@ -216,17 +227,39 @@ shells:
     modules: [path]
 ```
 
+Swiss does **not** write generated init files during apply. Instead it patches
+a single bounded `# swiss begin: init` block into the shell's startup file that
+calls `swiss init --shell <name>` at every startup; that command renders the
+script live from the registered manifest plus the dynamic state (cached
+aliases, `SWISS_VERSION`). Editing the manifest's modules takes effect on the
+next shell start, with no re-apply needed — and removing the `swiss` binary
+degrades gracefully (the block is guarded with `command -v swiss`).
+
+Enabled shells (any mode except `print`) are installed before they are
+configured. zsh/bash/pwsh come from the system package manager when missing
+(`apt-get install zsh`, `brew install zsh`, `brew install --cask powershell`…);
+Nushell rides the cargo/binstall phase (see the `nushell` section). Where no
+automatic install exists (e.g. pwsh on Linux, zsh on Windows) Swiss warns and
+still registers the — harmless — startup hook.
+
 Modes:
 
-- `managed-loader` (Nushell only): Swiss generates
-  `~/.config/swiss/{env.nu,conf.nu}` plus the dynamic files and per-module files,
-  then patches `$nu.env-path` / `$nu.config-path` once.
-- `snippet`: Swiss generates one init file under `~/.config/swiss`
-  (`init.zsh` / `init.bash`) containing every module as a bounded block, and
-  patches a single `# swiss begin: init` block into `target` that sources it.
+- `managed-loader` (Nushell only): Nushell cannot `eval` a dynamic string, so
+  Swiss patches `$nu.env-path` to regenerate `~/.config/swiss/init.nu` from
+  `swiss init --shell nushell` at startup and `$nu.config-path` to source it.
+- `snippet` (zsh/bash): patches `target` to `eval "$(swiss init --shell <name>)"`.
 - `profile`: like snippet, but the default target is PowerShell's `$PROFILE`
-  and the generated file is `init.ps1`.
-- `print`: never written during apply; print with `swiss init --shell <name>`.
+  and it pipes `swiss init --shell pwsh` into `Invoke-Expression`.
+- `print`: nothing is patched during apply; run `swiss init --shell <name>`
+  yourself and source/eval the output.
+
+In every mode the registration block prepends `~/.cargo/bin` to `PATH` first,
+so a freshly bootstrapped shell can find the `swiss` binary.
+
+For Nushell, drop any `*.nu` file into `~/.swiss/env` or `~/.swiss/conf` (e.g.
+via a `files` entry) and `swiss init --shell nushell` appends it verbatim after
+the declarative modules — an escape hatch for snippets that don't fit
+`shell_modules`.
 
 ### `shell_modules`
 
@@ -241,7 +274,7 @@ shell_modules:
     aliases:
       ll: "ls -la"
   starship:
-    package: starship           # informational
+    package: starship           # doctor warns when nothing installs it
     init:                       # per-shell init line, emitted verbatim
       nushell: "starship init nu | save -f ~/.cache/starship/init.nu"
       zsh: eval "$(starship init zsh)"
@@ -258,8 +291,12 @@ Rendering per shell:
 | `aliases` | `alias k='v'` | `function k { v @args }` | `alias k = v` |
 | `init.<shell>` | verbatim | verbatim | verbatim |
 
-For the Nushell managed loader, `env_modules` render env vars + init, and
-`conf_modules` render aliases (plus init for pure-init modules).
+Every module in a shell's `modules` list renders as a bounded `# swiss begin:
+<module>` block, in list order, followed by a `swiss-aliases` block holding the
+aliases recorded in the cache by installed cargo dependencies. Order matters:
+list a base framework (e.g. oh-my-zsh) before the prompt/tool inits that should
+override it.
 
-All generated blocks are idempotent: re-applying replaces the existing block in
-place and leaves the rest of the file untouched.
+All blocks (both the startup registration block and the per-module blocks in
+the rendered script) are idempotent: re-running replaces the existing block in
+place and leaves the rest untouched.

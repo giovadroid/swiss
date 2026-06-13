@@ -2,6 +2,7 @@
 package_manager:
   linux:
     apt:
+      update_index: true
       packages:
         - git
         - curl

@@ -1,8 +1,9 @@
 use crate::commands::{self, NuShell};
 use crate::expand::expand_path;
 use crate::parser::GitConfig;
-use crate::persistence::{SwissCache, FINGERPRINT_KEY, NU_CONF_LOADER, NU_ENV_LOADER};
+use crate::persistence::{SwissCache, FINGERPRINT_KEY};
 use crate::plan::{git_clone_args, Plan, Step};
+use crate::report::{self, Outcome, Reporter};
 use crate::shellgen::upsert_block;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -16,17 +17,45 @@ impl Executor {
         Self { cache }
     }
 
-    pub fn execute(&mut self, plan: &Plan, fingerprint: Option<&str>) -> Result<()> {
-        let total = plan.steps.len();
-        for (index, step) in plan.steps.iter().enumerate() {
-            log::info!("[{}/{}] {}", index + 1, total, step);
-            self.execute_step(step)
-                .with_context(|| format!("Step {}/{} failed: {}", index + 1, total, step))?;
+    /// Runs every step, never aborting on the first failure: each is reported
+    /// with a check or a cross, and the failures are tallied in the returned
+    /// outcome. The manifest fingerprint is recorded only on a fully clean run.
+    pub fn execute(&mut self, plan: &Plan, fingerprint: Option<&str>) -> Outcome {
+        let total = plan
+            .steps
+            .iter()
+            .filter(|step| !step.is_bookkeeping())
+            .count();
+        let mut reporter = Reporter::new(total);
+
+        // Cache-only bookkeeping (RecordDep/RecordAliases) is skipped after its
+        // preceding action failed, so a failed install never records the tool
+        // as present.
+        let mut last_action_failed = false;
+        for step in &plan.steps {
+            if step.is_bookkeeping() {
+                if last_action_failed {
+                    report::file_log(&format!("skip (previous step failed): {}", step));
+                    continue;
+                }
+                if let Err(error) = self.execute_step(step) {
+                    report::file_log(&format!("bookkeeping step failed: {}: {:#}", step, error));
+                }
+                continue;
+            }
+
+            let label = step.to_string();
+            let ok = reporter.step(&label, || self.execute_step(step));
+            last_action_failed = !ok;
         }
-        if let Some(fingerprint) = fingerprint {
-            self.cache.set(FINGERPRINT_KEY, fingerprint);
+
+        let outcome = reporter.into_outcome();
+        if outcome.succeeded() {
+            if let Some(fingerprint) = fingerprint {
+                self.cache.set(FINGERPRINT_KEY, fingerprint);
+            }
         }
-        Ok(())
+        outcome
     }
 
     fn execute_step(&mut self, step: &Step) -> Result<()> {
@@ -372,35 +401,31 @@ fn patch_block(target: &str, block: &str, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Patches the bounded Swiss blocks into Nushell's env/config files: the env
+/// hook regenerates `init.nu` at startup, the config hook sources it.
 fn configure_nu() -> Result<()> {
     let env_path = NuShell::get_env_value("$nu.env-path")?;
     let conf_path = NuShell::get_env_value("$nu.config-path")?;
 
-    let mut env_data = std::fs::read_to_string(&env_path)?;
-    if !env_data.contains(NU_ENV_LOADER) {
-        env_data.push_str(
-            format!(
-                "\n# Swiss environment loader\n{}\n# Swiss environment loader end line\n",
-                NU_ENV_LOADER
-            )
-            .as_str(),
-        );
-        std::fs::write(&env_path, env_data)?;
-        log::debug!("Added {} to {}", NU_ENV_LOADER, env_path);
-    }
+    patch_nu_file(env_path.trim(), &crate::shellgen::nu_env_hook())?;
+    patch_nu_file(conf_path.trim(), &crate::shellgen::nu_config_hook())?;
+    Ok(())
+}
 
-    let conf_data = std::fs::read_to_string(&conf_path)?;
-    if !conf_data.contains(NU_CONF_LOADER) {
-        let mut conf_data = conf_data;
-        conf_data.push_str(
-            format!(
-                "\n# Swiss configuration loader\n{}\n# Swiss configuration loader end line\n",
-                NU_CONF_LOADER
-            )
-            .as_str(),
-        );
-        std::fs::write(&conf_path, conf_data)?;
-        log::debug!("Added {} to {}", NU_CONF_LOADER, conf_path);
+fn patch_nu_file(path: &str, content: &str) -> Result<()> {
+    let path = Path::new(path);
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let existing = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+    let updated = upsert_block(&existing, crate::shellgen::REGISTRATION_BLOCK, content);
+    if updated != existing {
+        std::fs::write(path, updated)?;
+        log::debug!("Patched Swiss block in {}", path.display());
     }
     Ok(())
 }
@@ -428,6 +453,55 @@ pub fn is_admin() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{Dependency, DependencyStatus, DependencyType};
+
+    fn command_step(program: &str) -> Step {
+        Step::Command {
+            program: program.to_owned(),
+            args: vec![],
+            cwd: None,
+            requires_admin: false,
+        }
+    }
+
+    #[test]
+    fn execute_runs_every_step_and_tallies_failures() {
+        let mut executor = Executor::new(SwissCache::default());
+        let plan = Plan {
+            steps: vec![
+                command_step("false"), // exits non-zero
+                command_step("true"),  // must still run after the failure
+            ],
+        };
+
+        let outcome = executor.execute(&plan, None);
+        assert_eq!(outcome.failed, 1);
+        assert_eq!(outcome.completed, 1);
+        assert!(!outcome.succeeded());
+    }
+
+    #[test]
+    fn record_steps_are_skipped_after_a_failed_action() {
+        let mut executor = Executor::new(SwissCache::default());
+        let plan = Plan {
+            steps: vec![
+                command_step("false"),
+                Step::RecordDep {
+                    dep: Dependency::new(
+                        "ghost".to_owned(),
+                        None,
+                        DependencyStatus::UpToDate,
+                        DependencyType::Cargo,
+                    ),
+                },
+            ],
+        };
+
+        let outcome = executor.execute(&plan, None);
+        assert_eq!(outcome.failed, 1);
+        // The install failed, so the dependency is never recorded as present.
+        assert!(executor.cache.get_dep("ghost").is_none());
+    }
 
     #[test]
     fn write_file_respects_overwrite_flag() {
